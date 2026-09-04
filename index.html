@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Smart Reminder</title>
+    <title>LogLoom</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -37,7 +37,7 @@
 
     <div id="app" class="w-full h-full relative">
         <div class="flex flex-col items-center justify-center min-h-screen">
-            <p class="text-gray-400 font-semibold animate-pulse" id="loadingText">Loading Smart Reminder...</p>
+            <p class="text-gray-400 font-semibold animate-pulse" id="loadingText">Loading LogLoom...</p>
         </div>
     </div>
 
@@ -57,7 +57,6 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // ユーザー指定のFirebase設定
         const userFirebaseConfig = {
             apiKey: "AIzaSyDrP9nAgF-J9ISkPTr0LAC_EeDmDpEWPNw",
             authDomain: "reminder-5f9ca.firebaseapp.com",
@@ -67,7 +66,6 @@
             appId: "1:1068531232868:web:cf1d7da63f961a391b2f71"
         };
         
-        // プレビュー環境（Canvas）では環境提供の設定を優先し、外部環境ではユーザーの設定を利用する
         const isCanvasEnvironment = typeof __firebase_config !== 'undefined';
         const firebaseConfig = isCanvasEnvironment ? JSON.parse(__firebase_config) : userFirebaseConfig;
 
@@ -124,7 +122,6 @@
             let searchQuery = '';
             let isListEditMode = false;
 
-            // ローカルフィルター（リスト内での絞り込み）
             let localFilterLocation = 'all';
             let localFilterPriority = 'all';
             let localFilterCategory = 'all';
@@ -135,7 +132,7 @@
             let pendingAiTask = null;
             let customModal = { isOpen: false, type: '', data: null };
             let isSelectCategoryModalOpen = false;
-            let viewingImage = null; // 画像拡大表示用
+            let viewingImage = null;
             
             let categoryFormState = { name: '', color: 'bg-blue-500', icon: 'list' };
             let tempMemo = '';
@@ -197,7 +194,6 @@
                 const d = new Date();
                 if (schedule === 'Daily') return formatDate(d);
                 if (schedule === 'Weekly') {
-                    // 詳細指定がない場合は「日曜日(0)」をデフォルトとして期限を計算
                     const targetDay = (detail === undefined || detail === '') ? 0 : parseInt(detail);
                     let diff = targetDay - d.getDay();
                     if (diff < 0) diff += 7;
@@ -205,7 +201,6 @@
                     return formatDate(d);
                 }
                 if (schedule === 'Monthly') {
-                    // 詳細指定がない場合は「月末(last)」をデフォルトとして期限を計算
                     const actualDetail = (detail === undefined || detail === '') ? 'last' : detail;
                     let y = d.getFullYear();
                     let m = d.getMonth();
@@ -225,25 +220,44 @@
                 return formatDate(d);
             }
 
+            // 次の週・月の期限を計算するヘルパー関数
+            function getNextWeeklyDueDate(currentDueDateStr, recurringDetail) {
+                const baseDate = currentDueDateStr ? new Date(currentDueDateStr) : new Date();
+                baseDate.setDate(baseDate.getDate() + 7);
+                return formatDate(baseDate);
+            }
+
+            function getNextMonthlyDueDate(currentDueDateStr, recurringDetail) {
+                const baseDate = currentDueDateStr ? new Date(currentDueDateStr) : new Date();
+                const actualDetail = (recurringDetail === undefined || recurringDetail === '') ? 'last' : recurringDetail;
+                let y = baseDate.getFullYear();
+                let m = baseDate.getMonth() + 1; // 翌月以降へ
+                if (actualDetail === 'last') {
+                    return formatDate(new Date(y, m + 1, 0));
+                } else {
+                    let tDate = parseInt(actualDetail);
+                    let nextD = new Date(y, m, tDate);
+                    if (nextD.getMonth() !== m) nextD = new Date(y, m + 1, 0);
+                    return formatDate(nextD);
+                }
+            }
+
             function isActiveCompletedTask(t) {
                 if (!t.completed) return false;
                 if (!['Daily', 'Weekly', 'Monthly'].includes(t.schedule)) return false;
                 
                 const today = getTodayStr();
                 
-                // 今日完了したものなら達成感のために今日中は残す
                 if (t.completedAt) {
                     const completedDateStr = formatDate(new Date(t.completedAt));
                     if (completedDateStr === today) return true;
                 }
                 
-                // まだ期日（期限）が未来または今日なら残す
                 if (t.dueDate && t.dueDate >= today) return true;
                 
                 return false;
             }
 
-            // 排他的フィルタリング処理（Today → Week → Month）
             function isTodayTask(t) {
                 if (t.schedule === 'Today' || t.schedule === 'Daily') return true;
                 const today = getTodayStr();
@@ -262,8 +276,8 @@
             
             function isMonthTask(t) {
                 if (isTodayTask(t) || isWeekTask(t)) return false;
-                const prefix = getThisMonthPrefix();
-                if (t.dueDate && t.dueDate.startsWith(prefix)) return true;
+                const today = getTodayStr();
+                if (t.dueDate && t.dueDate >= today) return true;
                 if (t.schedule === 'Month' || t.schedule === 'Monthly') return true;
                 return false;
             }
@@ -302,7 +316,8 @@
                 };
             }
 
-            window.insertTaskAtProperPosition = (task) => {
+            window.insertTaskAtProperPosition = async (task) => {
+                if(!userId) return;
                 let tempTasks = tasks.filter(t => t.id !== task.id);
 
                 if (task.completed) {
@@ -329,6 +344,7 @@
                     }
                     if (!inserted) tempTasks.push(task);
                 }
+                await setDoc(doc(db, 'artifacts', appIdStr, 'users', userId, 'reminders', task.id), task);
                 syncTasksOrder(tempTasks);
             };
 
@@ -445,7 +461,7 @@
                             <!-- Left Sidebar (ホーム画面) -->
                             <aside class="w-full sm:w-[320px] md:w-[380px] flex-shrink-0 flex flex-col h-full border-r border-gray-200 dark:border-gray-800 transition-transform overflow-hidden ${showSidebarOnMobile ? 'flex' : 'hidden sm:flex'}">
                                 <header class="px-5 py-4 flex items-center justify-between border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 flex-shrink-0">
-                                    <h1 class="text-xl font-bold tracking-tight text-gray-900 dark:text-white">Reminder</h1>
+                                    <h1 class="text-xl font-bold tracking-tight text-gray-900 dark:text-white">LogLoom</h1>
                                     <div class="flex items-center gap-1">
                                         <button onclick="window.toggleDarkMode()" class="p-2 rounded-full text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800 transition">
                                             <i data-lucide="${isDarkMode ? 'sun' : 'moon'}" class="w-5 h-5"></i>
@@ -654,25 +670,22 @@
             function renderTaskList() {
                 const todayStr = getTodayStr();
                 let filteredTasks = tasks.filter(t => {
-                    // 「Executed」ビュー
                     if (selectedFilter === 'Executed' && !selectedCategory) {
                         if (t.completed) return true;
                         return false;
                     }
 
-                    // 「リスト（カテゴリ）」ビュー
                     if (selectedCategory) {
                         if (t.category !== selectedCategory) return false;
-                        if (t.completed && !isActiveCompletedTask(t)) return false; // 実行済はExecutedへ移動
+                        if (t.completed && !isActiveCompletedTask(t)) return false; 
                     }
 
-                    // フィルタービュー（Today, Weekなど）
                     if (!selectedCategory && selectedFilter && selectedFilter !== 'Executed') {
                         if (t.completed) {
                             if (['Daily', 'Weekly', 'Monthly'].includes(selectedFilter)) {
                                 if (!isActiveCompletedTask(t)) return false;
                             } else {
-                                return false; // Today, Week, Month, Undated は完了済みを非表示
+                                return false; 
                             }
                         }
 
@@ -688,11 +701,9 @@
                         if (!matchFilter) return false;
                     }
 
-                    // ローカルフィルターの適用 (場所、優先度)
                     if (localFilterLocation !== 'all' && t.location !== localFilterLocation) return false;
                     if (localFilterPriority !== 'all' && t.priority !== localFilterPriority) return false;
 
-                    // カテゴリとスケジュールのローカルフィルター
                     if (localFilterCategory !== 'all' && t.category !== localFilterCategory) return false;
                     if (localFilterSchedule !== 'all') {
                         let matchLocalSchedule = false;
@@ -1136,7 +1147,6 @@
             window.toggleSearch = () => { isSearchOpen = !isSearchOpen; if (!isSearchOpen) searchQuery = ''; render(); };
             window.updateSearchQuery = (val) => { searchQuery = val; render(); };
             
-            // ローカルフィルター
             window.updateLocalFilters = () => {
                 localFilterLocation = document.getElementById('localFilterLocation')?.value || 'all';
                 localFilterPriority = document.getElementById('localFilterPriority')?.value || 'all';
@@ -1329,8 +1339,20 @@
                 const task = tasks.find(t => t.id === id);
                 if (task) {
                     task.completed = !task.completed;
-                    if (task.completed) task.completedAt = Date.now();
-                    else delete task.completedAt;
+                    if (task.completed) {
+                        task.completedAt = Date.now();
+                        if (task.schedule === 'Weekly') {
+                            task.dueDate = getNextWeeklyDueDate(task.dueDate, task.recurringDetail);
+                            task.completed = false;
+                            delete task.completedAt;
+                        } else if (task.schedule === 'Monthly') {
+                            task.dueDate = getNextMonthlyDueDate(task.dueDate, task.recurringDetail);
+                            task.completed = false;
+                            delete task.completedAt;
+                        }
+                    } else {
+                        delete task.completedAt;
+                    }
                     window.insertTaskAtProperPosition(task);
                 }
             };
@@ -1374,7 +1396,7 @@
                     isTaskModalOpen = false; render();
                 } else {
                     const newTask = { id: generateId(), ...baseTaskData, category, completed: false, createdAt: Date.now(), order: tasks.length };
-                    window.insertTaskAtProperPosition(newTask);
+                    await window.insertTaskAtProperPosition(newTask);
                     window.closeTaskModal();
                 }
             };
@@ -1387,7 +1409,7 @@
                         await setDoc(doc(db, 'artifacts', appIdStr, 'users', userId, 'categories', newCat.id), newCat);
                     }
                     pendingAiTask.taskData.category = catName;
-                    window.insertTaskAtProperPosition(pendingAiTask.taskData);
+                    await window.insertTaskAtProperPosition(pendingAiTask.taskData);
                     pendingAiTask = null; render();
                 }
             };
@@ -1415,12 +1437,14 @@
                 if (tasksLoaded && catsLoaded && !isDataLoaded) {
                     isDataLoaded = true;
                     
-                    let needsTaskUpdate = false;
                     const todayDateStr = getTodayStr();
                     tasks.forEach(t => {
                         if (!t.completed && t.dueDate && t.dueDate < todayDateStr) {
-                            if (t.schedule === 'Weekly' || t.schedule === 'Monthly') {
-                                t.dueDate = getInitialDueDate(t.schedule, t.recurringDetail);
+                            if (t.schedule === 'Weekly') {
+                                t.dueDate = getNextWeeklyDueDate(t.dueDate, t.recurringDetail);
+                                setDoc(doc(db, 'artifacts', appIdStr, 'users', userId, 'reminders', t.id), t);
+                            } else if (t.schedule === 'Monthly') {
+                                t.dueDate = getNextMonthlyDueDate(t.dueDate, t.recurringDetail);
                                 setDoc(doc(db, 'artifacts', appIdStr, 'users', userId, 'reminders', t.id), t);
                             }
                         }
