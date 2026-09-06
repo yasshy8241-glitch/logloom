@@ -25,25 +25,29 @@
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background-color: rgba(156, 163, 175, 0.5); border-radius: 20px; }
-        .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-        .hide-scrollbar::-webkit-scrollbar { display: none; }
-        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .line-clamp-2 {
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
     </style>
 </head>
 <body class="bg-gray-100 text-gray-900 transition-colors duration-300 w-full h-screen overflow-hidden" id="bodyRoot">
 
     <div id="app" class="w-full h-full relative">
         <div class="flex flex-col items-center justify-center min-h-screen">
-            <p class="text-gray-400 font-semibold animate-pulse">Loading LogLoom...</p>
+            <p class="text-gray-400 font-semibold animate-pulse" id="loadingText">Loading LogLoom...</p>
         </div>
     </div>
 
     <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        // Firebase のインポート
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
+        import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+        import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
 
-        // ユーザー指定のFirebase Config
+        // Firebase 設定
         const firebaseConfig = {
             apiKey: "AIzaSyDrP9nAgF-J9ISkPTr0LAC_EeDmDpEWPNw",
             authDomain: "reminder-5f9ca.firebaseapp.com",
@@ -53,14 +57,15 @@
             appId: "1:1068531232868:web:cf1d7da63f961a391b2f71"
         };
 
-        const app = initializeApp(firebaseConfig);
-        const db = getFirestore(app);
-        const auth = getAuth(app);
-        
+        const appFirebase = initializeApp(firebaseConfig);
+        const db = getFirestore(appFirebase);
+        const auth = getAuth(appFirebase);
+
         let currentUser = null;
         let unsubscribeTasks = null;
-        let unsubscribeCategories = null;
+        let unsubscribeCats = null;
 
+        // グローバルエラー検知
         window.addEventListener('error', function(event) {
             const appEl = document.getElementById('app');
             if (appEl) {
@@ -72,52 +77,21 @@
             }
         });
 
-        let inMemoryStorage = {};
         const safeStorage = {
-            getItem(key) { try { return localStorage.getItem(key); } catch (e) { return inMemoryStorage[key] || null; } },
-            setItem(key, value) { try { localStorage.setItem(key, value); } catch (e) { inMemoryStorage[key] = value; } }
+            getItem(key) { try { return localStorage.getItem(key); } catch (e) { return null; } },
+            setItem(key, value) { try { localStorage.setItem(key, value); } catch (e) { } }
         };
 
-        const availableIcons = [
-            'list', 'home', 'heart', 'gem', 'lightbulb', 'gift', 'cake', 'shopping-cart',
-            'utensils', 'coffee', 'shield', 'landmark', 'credit-card', 'receipt', 'ticket', 'plane',
-            'briefcase', 'bus', 'car', 'gamepad-2', 'dumbbell', 'trophy', 'activity', 'building',
-            'building-2', 'graduation-cap', 'book', 'pen-tool', 'clock', 'users', 'smile',
-            'alarm-clock', 'leaf', 'feather', 'bookmark', 'newspaper', 'wrench', 'zap', 'star', 
-            'music', 'camera', 'headphones', 'mic', 'video', 'map-pin', 'navigation', 'compass', 'bell'
-        ];
-
-        const availableColors = [
-            'bg-red-500', 'bg-orange-500', 'bg-amber-500', 'bg-green-500', 'bg-emerald-500', 'bg-teal-500',
-            'bg-blue-500', 'bg-cyan-500', 'bg-indigo-500', 'bg-purple-500', 'bg-pink-500', 'bg-rose-500',
-            'bg-gray-500', 'bg-slate-700', 'bg-black'
-        ];
+        const availableIcons = ['list', 'home', 'heart', 'gem', 'lightbulb', 'gift', 'shopping-cart', 'briefcase', 'activity', 'star', 'bell'];
+        const availableColors = ['bg-red-500', 'bg-orange-500', 'bg-amber-500', 'bg-green-500', 'bg-blue-500', 'bg-indigo-500', 'bg-purple-500', 'bg-gray-500', 'bg-black'];
 
         function renderIcon(iconName) {
-            if (iconName && !iconName.match(/^[a-zA-Z0-9-]+$/)) return `<span>${iconName}</span>`;
             const name = iconName || 'list';
             return `<i data-lucide="${name}" class="w-4 h-4"></i>`;
         }
 
         let tasks = [];
         let categories = [];
-        
-        try {
-            let parsedTasks = JSON.parse(safeStorage.getItem('smart_tasks'));
-            tasks = Array.isArray(parsedTasks) ? parsedTasks : [];
-            let parsedCats = JSON.parse(safeStorage.getItem('smart_categories'));
-            categories = Array.isArray(parsedCats) ? parsedCats : [];
-            if (categories.length === 0) {
-                categories = [
-                    { id: '1', name: 'To Do', icon: 'list', color: 'bg-blue-500' },
-                    { id: '2', name: '買い物', icon: 'shopping-cart', color: 'bg-orange-500' },
-                    { id: '3', name: '仕事', icon: 'briefcase', color: 'bg-indigo-500' },
-                    { id: '4', name: 'アイデア', icon: 'lightbulb', color: 'bg-amber-500' }
-                ];
-            }
-        } catch(e) {
-            tasks = []; categories = [ { id: '1', name: 'To Do', icon: 'list', color: 'bg-blue-500' } ];
-        }
         
         let currentView = 'home'; 
         let selectedCategory = null;
@@ -137,7 +111,7 @@
         let pendingAiTask = null;
         let customModal = { isOpen: false, type: '', data: null };
         let isSelectCategoryModalOpen = false;
-        let viewingImage = null;
+        let viewingImage = null; 
         
         let categoryFormState = { name: '', color: 'bg-blue-500', icon: 'list' };
         let tempMemo = '';
@@ -145,54 +119,54 @@
         let taskFormAttachments = [];
         let defaultCategory = '';
         let defaultSchedule = '';
-        let taskFormDraft = null;
 
         const appContainer = document.getElementById('app');
-
-        function saveTasksToLocal() { safeStorage.setItem('smart_tasks', JSON.stringify(tasks)); }
-        function saveCategoriesToLocal() { safeStorage.setItem('smart_categories', JSON.stringify(categories)); }
-
-        function saveTaskToDB(task) {
-            saveTasksToLocal();
-            if (currentUser) {
-                try { setDoc(doc(db, 'users', currentUser.uid, 'tasks', task.id), task); } catch(e) { console.error(e); }
-            }
-        }
-        function deleteTaskFromDB(taskId) {
-            saveTasksToLocal();
-            if (currentUser) {
-                try { deleteDoc(doc(db, 'users', currentUser.uid, 'tasks', taskId)); } catch(e) { console.error(e); }
-            }
-        }
-        function saveCategoryToDB(cat) {
-            saveCategoriesToLocal();
-            if (currentUser) {
-                try { setDoc(doc(db, 'users', currentUser.uid, 'categories', cat.id), cat); } catch(e) { console.error(e); }
-            }
-        }
-        function deleteCategoryFromDB(catId) {
-            saveCategoriesToLocal();
-            if (currentUser) {
-                try { deleteDoc(doc(db, 'users', currentUser.uid, 'categories', catId)); } catch(e) { console.error(e); }
-            }
-        }
 
         function generateId() { return Math.random().toString(36).substr(2, 9); }
         function formatDate(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
         function getTodayStr() { return formatDate(new Date()); }
+        function getThisMonthPrefix() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
+
         function getThisWeekRange() {
-            const d = new Date(); const day = d.getDay(); const diffToMon = day === 0 ? -6 : 1 - day;
+            const d = new Date();
+            const day = d.getDay();
+            const diffToMon = day === 0 ? -6 : 1 - day;
             const mon = new Date(d); mon.setDate(mon.getDate() + diffToMon);
             const sun = new Date(mon); sun.setDate(sun.getDate() + 6);
             return { start: formatDate(mon), end: formatDate(sun) };
         }
         function getWeekendStr() { return getThisWeekRange().end; }
-        function getThisMonthPrefix() {
-            const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-        }
         function getMonthEndStr() {
-            const d = new Date(); const end = new Date(d.getFullYear(), d.getMonth() + 1, 0); 
+            const d = new Date();
+            const end = new Date(d.getFullYear(), d.getMonth() + 1, 0); 
             return formatDate(end);
+        }
+
+        // 次の期日を計算する関数 (無限ループ対策済)
+        function getNextDueDate(schedule, currentDueDate, detail) {
+            const d = new Date();
+            const todayStr = formatDate(d);
+            const [y, m, day] = currentDueDate.split('-').map(Number);
+            let nextD = new Date(y, m - 1, day);
+
+            if (schedule === 'Daily') {
+                nextD.setDate(nextD.getDate() + 1);
+                while (nextD < d && formatDate(nextD) !== todayStr) { nextD.setDate(nextD.getDate() + 1); }
+            } else if (schedule === 'Weekly') {
+                nextD.setDate(nextD.getDate() + 7);
+                while (nextD < d && formatDate(nextD) !== todayStr) { nextD.setDate(nextD.getDate() + 7); }
+            } else if (schedule === 'Monthly') {
+                const isLastDay = detail === 'last';
+                const targetDay = isLastDay ? 0 : (parseInt(detail) || 1);
+                if (isLastDay) { nextD = new Date(nextD.getFullYear(), nextD.getMonth() + 2, 0); } 
+                else { nextD.setMonth(nextD.getMonth() + 1); }
+                
+                while (nextD < d && formatDate(nextD) !== todayStr) {
+                    if (isLastDay) { nextD = new Date(nextD.getFullYear(), nextD.getMonth() + 2, 0); } 
+                    else { nextD.setMonth(nextD.getMonth() + 1); }
+                }
+            }
+            return formatDate(nextD);
         }
 
         function getInitialDueDate(schedule, detail) {
@@ -207,8 +181,8 @@
             }
             if (schedule === 'Monthly') {
                 const actualDetail = (detail === undefined || detail === '') ? 'last' : detail;
-                let y = d.getFullYear(); let m = d.getMonth();
-                if (actualDetail === 'last') return formatDate(new Date(y, m + 1, 0));
+                let y = d.getFullYear(), m = d.getMonth();
+                if (actualDetail === 'last') { return formatDate(new Date(y, m + 1, 0)); }
                 else {
                     let tDate = parseInt(actualDetail);
                     let nextD = new Date(y, m, tDate);
@@ -223,129 +197,37 @@
             return formatDate(d);
         }
 
-        function getNextDueDate(schedule, detail, fromDateStr) {
-            if (!fromDateStr) return getInitialDueDate(schedule, detail);
-            const parts = fromDateStr.split('-');
-            if (parts.length !== 3) return getInitialDueDate(schedule, detail);
-            
-            let y = parseInt(parts[0]);
-            let m = parseInt(parts[1]) - 1;
-            let d = parseInt(parts[2]);
-            let nextDateObj = new Date(y, m, d);
-            
-            const today = new Date();
-            today.setHours(0,0,0,0);
-
-            if (schedule === 'Daily') {
-                nextDateObj.setDate(nextDateObj.getDate() + 1);
-                if (nextDateObj < today) nextDateObj = new Date(today);
-            } else if (schedule === 'Weekly') {
-                nextDateObj.setDate(nextDateObj.getDate() + 7);
-                while (nextDateObj < today) { nextDateObj.setDate(nextDateObj.getDate() + 7); }
-            } else if (schedule === 'Monthly') {
-                let actualDetail = (detail === undefined || detail === '') ? 'last' : detail;
-                do {
-                    m++;
-                    if (m > 11) { y++; m = 0; }
-                    if (actualDetail === 'last') {
-                        nextDateObj = new Date(y, m + 1, 0);
-                    } else {
-                        let tDate = parseInt(actualDetail);
-                        nextDateObj = new Date(y, m, tDate);
-                        if (nextDateObj.getMonth() !== m) nextDateObj = new Date(y, m + 1, 0);
-                    }
-                } while (nextDateObj < today);
-            }
-            return formatDate(nextDateObj);
-        }
-
-        function processRecurringTasks() {
-            let newTasks = [];
-            let updatedTasks = [];
-            const todayStr = getTodayStr();
-            let changed = false;
-
-            tasks.forEach(t => {
-                if (!t.completed && t.dueDate && t.dueDate < todayStr) {
-                    const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
-                    if (['Daily', 'Weekly', 'Monthly'].includes(schedBase) && !t.schedule.includes('_Expired')) {
-                        const nextDue = getNextDueDate(schedBase, t.recurringDetail, t.dueDate);
-                        
-                        const newTask = { ...t, id: generateId(), dueDate: nextDue, createdAt: Date.now() };
-                        t.schedule = schedBase + '_Expired';
-                        
-                        newTasks.push(newTask);
-                        updatedTasks.push(t);
-                        changed = true;
-                    }
-                }
-            });
-
-            if (changed) {
-                newTasks.forEach(nt => tasks.push(nt));
-                saveTasksToLocal();
-                updatedTasks.forEach(ut => saveTaskToDB(ut));
-                newTasks.forEach(nt => saveTaskToDB(nt));
-            }
-            return changed;
-        }
-
         function isActiveCompletedTask(t) {
             if (!t.completed) return false;
-            const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
-            if (!['Daily', 'Weekly', 'Monthly'].includes(schedBase)) return false;
-            
+            if (!['Daily', 'Weekly', 'Monthly'].includes(t.schedule)) return false;
             const today = getTodayStr();
-            // 期日満了前なら残す
             if (t.dueDate && t.dueDate >= today) return true;
-            
-            // 今日完了したものなら達成感のために今日中は残す
-            if (t.completedAt) {
-                const completedDateStr = formatDate(new Date(t.completedAt));
-                if (completedDateStr === today) return true;
-            }
             return false;
         }
 
         function isTodayTask(t) {
-            const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
-            if (schedBase === 'Today' || schedBase === 'Daily') return true;
+            if (t.completed) return false;
+            if (t.schedule === 'Today' || t.schedule === 'Daily') return true;
             const today = getTodayStr();
             if (t.dueDate && t.dueDate <= today) return true;
             return false;
         }
-        
         function isWeekTask(t) {
+            if (t.completed) return false;
             if (isTodayTask(t)) return false;
             const today = getTodayStr();
             const { end: weekEnd } = getThisWeekRange();
             if (t.dueDate && t.dueDate > today && t.dueDate <= weekEnd) return true;
-            const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
-            if (!t.dueDate && (schedBase === 'Week' || schedBase === 'Weekly')) return true;
+            if (!t.dueDate && (t.schedule === 'Week' || t.schedule === 'Weekly')) return true;
             return false;
         }
-        
         function isMonthTask(t) {
+            if (t.completed) return false;
             if (isTodayTask(t) || isWeekTask(t)) return false;
-            const thisMonthPrefix = getThisMonthPrefix();
-            // 当月以降（未来の月も）であればMonthに含める
-            if (t.dueDate && t.dueDate >= thisMonthPrefix + "-01") return true;
-            const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
-            if (schedBase === 'Month' || schedBase === 'Monthly') return true;
+            const prefix = getThisMonthPrefix();
+            if (t.dueDate && t.dueDate >= getTodayStr()) return true;
+            if (t.schedule === 'Month' || t.schedule === 'Monthly') return true;
             return false;
-        }
-
-        function calculateSimilarity(str1, str2) {
-            if (!str1 || !str2) return 0;
-            const s1 = String(str1).toLowerCase(); const s2 = String(str2).toLowerCase();
-            if (s1 === s2) return 1.0;
-            if (s1.length < 2 || s2.length < 2) return (s1.includes(s2) || s2.includes(s1)) ? 0.5 : 0;
-            let matchCount = 0; const total = s1.length - 1;
-            for (let i = 0; i < s1.length - 1; i++) {
-                const bigram = s1.substring(i, i + 2);
-                if (s2.includes(bigram)) matchCount++;
-            }
-            return matchCount / total;
         }
 
         function escapeHtml(str) {
@@ -353,72 +235,146 @@
             return String(str).replace(/[&<>'"]/g, tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag));
         }
 
+        // Firestore 同期設定とエラーアラート追加
+        function setupRealtimeSync(uid) {
+            if(unsubscribeTasks) unsubscribeTasks();
+            if(unsubscribeCats) unsubscribeCats();
+
+            const qTasks = query(collection(db, `users/${uid}/reminders`));
+            unsubscribeTasks = onSnapshot(qTasks, (snapshot) => {
+                tasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                checkAndProcessRecurringTasks();
+                render();
+            }, (error) => {
+                console.error("Firestore Tasks Error:", error);
+                if (error.code === 'permission-denied') {
+                    alert("【エラー】データベースへのアクセス権限がありません。\nFirebase ConsoleでFirestoreのセキュリティルールを更新してください。");
+                } else {
+                    alert("タスクの同期中にエラーが発生しました:\n" + error.message);
+                }
+            });
+
+            const qCats = query(collection(db, `users/${uid}/categories`));
+            unsubscribeCats = onSnapshot(qCats, (snapshot) => {
+                categories = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                render();
+            }, (error) => {
+                console.error("Firestore Cats Error:", error);
+                // 片方でアラートを出せば十分なのでここではコンソールのみ
+            });
+        }
+
+        async function saveTaskToFirestore(task) {
+            if (!currentUser) return;
+            try {
+                await setDoc(doc(db, `users/${currentUser.uid}/reminders`, task.id), task);
+            } catch (error) {
+                console.error("Error saving task:", error);
+            }
+        }
+        async function deleteTaskFromFirestore(taskId) {
+            if (!currentUser) return;
+            try {
+                await deleteDoc(doc(db, `users/${currentUser.uid}/reminders`, taskId));
+            } catch (error) {
+                console.error("Error deleting task:", error);
+            }
+        }
+        async function saveCategoryToFirestore(category) {
+            if (!currentUser) return;
+            try {
+                await setDoc(doc(db, `users/${currentUser.uid}/categories`, category.id), category);
+            } catch (error) {
+                console.error("Error saving category:", error);
+            }
+        }
+        async function deleteCategoryFromFirestore(catId) {
+            if (!currentUser) return;
+            try {
+                await deleteDoc(doc(db, `users/${currentUser.uid}/categories`, catId));
+            } catch (error) {
+                console.error("Error deleting category:", error);
+            }
+        }
+
+        function checkAndProcessRecurringTasks() {
+            const today = getTodayStr();
+            let hasUpdates = false;
+
+            tasks.forEach(t => {
+                if (t.dueDate && t.dueDate < today && ['Daily', 'Weekly', 'Monthly'].includes(t.schedule)) {
+                    if (!t.completed) {
+                        const nextDate = getNextDueDate(t.schedule, t.dueDate, t.recurringDetail);
+                        t.schedule = t.schedule + '_Expired';
+                        saveTaskToFirestore(t);
+                        const newTask = { ...t, id: generateId(), dueDate: nextDate, schedule: t.schedule.replace('_Expired', ''), createdAt: Date.now() };
+                        saveTaskToFirestore(newTask);
+                        hasUpdates = true;
+                    } else {
+                        t.schedule = t.schedule + '_Expired';
+                        saveTaskToFirestore(t);
+                        hasUpdates = true;
+                    }
+                }
+            });
+            if(hasUpdates) render();
+        }
+
+        window.loginWithGoogle = async () => {
+            try {
+                const provider = new GoogleAuthProvider();
+                provider.setCustomParameters({ prompt: 'select_account' });
+                await signInWithPopup(auth, provider);
+            } catch (error) {
+                console.error("Login Error:", error);
+                // ★モバイル・他端末でエラー原因が分かるようにアラートを表示
+                let errorMessage = "ログインに失敗しました。";
+                if (error.code === 'auth/popup-blocked') {
+                    errorMessage = "ブラウザのポップアップブロックが原因で画面が開けません。設定で許可してください。";
+                } else if (error.code === 'auth/unauthorized-domain') {
+                    errorMessage = "このドメイン(URL)はFirebaseで許可されていません。Firebase Consoleの「承認済みドメイン」に追加してください。";
+                } else if (error.code === 'auth/popup-closed-by-user') {
+                    errorMessage = "ログイン処理がキャンセルされました。";
+                }
+                alert(errorMessage + "\n(エラーコード: " + error.code + ")");
+            }
+        };
+
+        window.logout = async () => {
+            try { await signOut(auth); } 
+            catch (error) { console.error("Logout Error:", error); }
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            currentUser = user;
+            if (user) {
+                setupRealtimeSync(user.uid);
+            } else {
+                if(unsubscribeTasks) { unsubscribeTasks(); unsubscribeTasks = null; }
+                if(unsubscribeCats) { unsubscribeCats(); unsubscribeCats = null; }
+                tasks = [];
+                categories = [];
+                render();
+            }
+        });
+
         function getCounts() {
             const activeTasks = tasks.filter(t => !t.completed);
             return {
                 Today: activeTasks.filter(t => isTodayTask(t)).length,
                 Week: activeTasks.filter(t => isWeekTask(t)).length,
                 Month: activeTasks.filter(t => isMonthTask(t)).length,
-                Daily: tasks.filter(t => t.schedule && t.schedule.startsWith('Daily') && (!t.completed || isActiveCompletedTask(t))).length,
-                Weekly: tasks.filter(t => t.schedule && t.schedule.startsWith('Weekly') && (!t.completed || isActiveCompletedTask(t))).length,
-                Monthly: tasks.filter(t => t.schedule && t.schedule.startsWith('Monthly') && (!t.completed || isActiveCompletedTask(t))).length,
+                Daily: tasks.filter(t => t.schedule === 'Daily' && (!t.completed || isActiveCompletedTask(t))).length,
+                Weekly: tasks.filter(t => t.schedule === 'Weekly' && (!t.completed || isActiveCompletedTask(t))).length,
+                Monthly: tasks.filter(t => t.schedule === 'Monthly' && (!t.completed || isActiveCompletedTask(t))).length,
                 Undated: activeTasks.filter(t => !t.schedule || t.schedule === '').length,
-                Executed: tasks.filter(t => t.completed && !isActiveCompletedTask(t)).length // 完全に終わったものだけカウント
+                Executed: tasks.filter(t => t.completed).length
             };
         }
 
         window.insertTaskAtProperPosition = (task) => {
-            tasks = tasks.filter(t => t.id !== task.id);
-            if (task.completed) {
-                const firstCompletedIndex = tasks.findIndex(t => t.completed);
-                if (firstCompletedIndex === -1) tasks.push(task);
-                else tasks.splice(firstCompletedIndex, 0, task);
-            } else {
-                const priorityWeight = { high: 3, medium: 2, low: 1, none: 0 };
-                const taskWeight = priorityWeight[task.priority || 'none'] || 0;
-                
-                let inserted = false;
-                for (let i = 0; i < tasks.length; i++) {
-                    if (tasks[i].completed) {
-                        tasks.splice(i, 0, task); inserted = true; break;
-                    }
-                    const w = priorityWeight[tasks[i].priority || 'none'] || 0;
-                    if (taskWeight > w) {
-                        tasks.splice(i, 0, task); inserted = true; break;
-                    }
-                }
-                if (!inserted) tasks.push(task);
-            }
+            saveTaskToFirestore(task);
         };
-
-        async function aiCategorizeAndIcon(text) {
-            if (tasks.length > 0) {
-                let bestMatch = null; let highestScore = 0.4;
-                for (let i = tasks.length - 1; i >= 0; i--) {
-                    const t = tasks[i];
-                    if (!t.category) continue;
-                    const score = calculateSimilarity(text, t.title);
-                    if (score > highestScore) { highestScore = score; bestMatch = t; }
-                }
-                if (bestMatch) {
-                    const targetCat = categories.find(c => c.name === bestMatch.category);
-                    if (targetCat) return { category: targetCat.name, icon: targetCat.icon, isLearned: true };
-                }
-            }
-            let catName = categories.length > 0 ? categories[0].name : '未分類';
-            let icon = categories.length > 0 ? categories[0].icon : 'list';
-            if (text.match(/(する|行く|確認|提出|連絡|電話|メール|作成|予約|調べる|読む|書く|払う|掃除)/)) {
-                const target = categories.find(c => c.name.toLowerCase().includes('todo') || c.name.toLowerCase().includes('仕事') || c.name.toLowerCase().includes('work'));
-                if (target) { catName = target.name; icon = target.icon; }
-            } else if (text.match(/(買う|購入|スーパー|コンビニ|注文|肉|野菜|牛乳|卵|パン|洗剤|薬|水)/)) {
-                const target = categories.find(c => c.name.toLowerCase().includes('買') || c.name.toLowerCase().includes('shopping'));
-                if (target) { catName = target.name; icon = target.icon; }
-            } else if (text.match(/(動画|youtube|見る|映画|アニメ)/i)) {
-                const target = categories.find(c => c.name.toLowerCase().includes('youtube') || c.name.toLowerCase().includes('動画'));
-                if (target) { catName = target.name; icon = target.icon; }
-            }
-            return { category: catName, icon: icon };
-        }
 
         function render() {
             try {
@@ -432,62 +388,8 @@
                 else if (selectedCategory) mainTitle = selectedCategory;
                 else if (selectedFilter) mainTitle = selectedFilter;
 
-                const baseTasks = tasks.filter(t => {
-                    if (selectedFilter === 'Executed' && !selectedCategory) {
-                        return t.completed && !isActiveCompletedTask(t);
-                    }
-                    if (selectedCategory) {
-                        if (t.category !== selectedCategory) return false;
-                        if (t.completed && !isActiveCompletedTask(t)) return false;
-                        return true;
-                    }
-                    if (t.completed) {
-                        // Daily, Weekly, Monthly フィルターの場合のみ期限満了まで完了済みを表示
-                        if (['Daily', 'Weekly', 'Monthly'].includes(selectedFilter)) {
-                            return isActiveCompletedTask(t);
-                        }
-                        // Today, Week, Month, Undated では完了タスクを表示しない
-                        return false;
-                    }
-                    
-                    if (selectedFilter) {
-                        if (selectedFilter === 'Today') return isTodayTask(t);
-                        if (selectedFilter === 'Week') return isWeekTask(t);
-                        if (selectedFilter === 'Month') return isMonthTask(t);
-                        
-                        const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
-                        if (selectedFilter === 'Daily') return schedBase === 'Daily';
-                        if (selectedFilter === 'Weekly') return schedBase === 'Weekly';
-                        if (selectedFilter === 'Monthly') return schedBase === 'Monthly';
-                        if (selectedFilter === 'Undated') return !t.schedule || t.schedule === '';
-                        return false;
-                    }
-                    return true;
-                });
-
-                const availLocs = new Set(baseTasks.map(t => t.location && t.location !== 'none' ? t.location : 'none'));
-                const availPris = new Set(baseTasks.map(t => t.priority && t.priority !== 'none' ? t.priority : 'none'));
-                const availCats = new Set(baseTasks.map(t => t.category || ''));
-                const availScheds = new Set();
-                baseTasks.forEach(t => {
-                    const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
-                    if (!t.completed) {
-                        if (isTodayTask(t)) availScheds.add('Today');
-                        if (isWeekTask(t)) availScheds.add('Week');
-                        if (isMonthTask(t)) availScheds.add('Month');
-                        if (!t.schedule || t.schedule === '') availScheds.add('Undated');
-                    }
-                    if (schedBase === 'Daily') availScheds.add('Daily');
-                    if (schedBase === 'Weekly') availScheds.add('Weekly');
-                    if (schedBase === 'Monthly') availScheds.add('Monthly');
-                });
-                
-                const hasLocations = availLocs.has('home') || availLocs.has('work') || availLocs.has('outing');
-
                 let html = `
                     <div class="flex h-screen w-full mx-auto max-w-7xl overflow-hidden bg-gray-50 dark:bg-gray-900 transition-colors duration-300 relative">
-                        
-                        <!-- Left Sidebar (ホーム画面) -->
                         <aside class="w-full sm:w-[320px] md:w-[380px] flex-shrink-0 flex flex-col h-full border-r border-gray-200 dark:border-gray-800 transition-transform overflow-hidden ${showSidebarOnMobile ? 'flex' : 'hidden sm:flex'}">
                             <header class="px-5 py-4 flex items-center justify-between border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 z-20 flex-shrink-0">
                                 <h1 class="text-xl font-bold tracking-tight text-gray-900 dark:text-white">LogLoom</h1>
@@ -501,18 +403,16 @@
                                 </div>
                             </header>
                             <div class="flex-1 overflow-y-auto p-4 space-y-6 pb-48">
-                                ${renderHomeContent()}
+                                ${currentUser ? renderHomeContent() : renderLoginPrompt()}
                             </div>
                         </aside>
 
-                        <!-- Right Main Area -->
                         <main class="flex-1 min-w-0 flex flex-col h-full relative overflow-hidden ${!showSidebarOnMobile ? 'flex' : 'hidden sm:flex'}">
                             <header class="px-5 py-4 flex items-center justify-between border-b border-gray-200 dark:border-gray-800 bg-white/80 dark:bg-gray-900/80 backdrop-blur z-20 flex-shrink-0">
                                 <div class="flex items-center gap-2 overflow-hidden">
                                     <button onclick="window.navigate('home')" class="sm:hidden p-1.5 -ml-2 rounded-full text-blue-500 hover:bg-blue-50 dark:hover:bg-gray-800 transition flex items-center flex-shrink-0">
-                                    <i data-lucide="chevron-left" class="w-6 h-6"></i>
-                                    <span class="font-semibold text-base">戻る</span>
-                                </button>
+                                        <i data-lucide="chevron-left" class="w-6 h-6"></i><span class="font-semibold text-base">戻る</span>
+                                    </button>
                                     <h2 class="text-2xl font-bold tracking-tight text-gray-900 dark:text-white truncate ${currentView !== 'home' ? '' : 'hidden sm:block'}">${escapeHtml(mainTitle)}</h2>
                                 </div>
                                 <div class="flex items-center gap-2 flex-shrink-0">
@@ -521,67 +421,17 @@
                                     </button>
                                 </div>
                             </header>
-                            
-                            ${isSearchOpen && currentView !== 'settings' ? `
-                                <div class="px-5 py-3 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 flex items-center gap-2 flex-shrink-0">
-                                    <i data-lucide="search" class="w-4 h-4 text-gray-400"></i>
-                                    <input type="text" id="searchInput" value="${escapeHtml(searchQuery)}" oninput="window.updateSearchQuery(this.value)" placeholder="タスクを検索..." class="w-full min-w-0 bg-transparent outline-none text-sm text-gray-900 dark:text-white">
-                                    <button onclick="window.toggleSearch()" class="text-xs flex-shrink-0 text-blue-500 font-semibold">閉じる</button>
-                                </div>
-                            ` : ''}
-
-                            ${currentView !== 'settings' ? `
-                            <div class="px-5 sm:px-8 lg:px-12 pt-4 pb-2 flex items-center gap-3 overflow-x-auto whitespace-nowrap hide-scrollbar">
-                                ${selectedFilter && !selectedCategory && availCats.size > 0 ? `
-                                    <select id="localFilterCategory" onchange="window.updateLocalFilters()" class="text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 rounded-lg p-1.5 outline-none focus:border-blue-500 transition shadow-sm">
-                                        <option value="all" ${localFilterCategory === 'all' ? 'selected' : ''}>すべてのリスト</option>
-                                        ${categories.filter(c => availCats.has(c.name)).map(c => `<option value="${escapeHtml(c.name)}" ${localFilterCategory === c.name ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
-                                    </select>
-                                ` : ''}
-                                ${selectedCategory && availScheds.size > 0 ? `
-                                    <select id="localFilterSchedule" onchange="window.updateLocalFilters()" class="text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 rounded-lg p-1.5 outline-none focus:border-blue-500 transition shadow-sm">
-                                        <option value="all" ${localFilterSchedule === 'all' ? 'selected' : ''}>すべての期限</option>
-                                        ${availScheds.has('Today') ? `<option value="Today" ${localFilterSchedule === 'Today' ? 'selected' : ''}>Today</option>` : ''}
-                                        ${availScheds.has('Week') ? `<option value="Week" ${localFilterSchedule === 'Week' ? 'selected' : ''}>Week</option>` : ''}
-                                        ${availScheds.has('Month') ? `<option value="Month" ${localFilterSchedule === 'Month' ? 'selected' : ''}>Month</option>` : ''}
-                                        ${availScheds.has('Daily') ? `<option value="Daily" ${localFilterSchedule === 'Daily' ? 'selected' : ''}>Daily</option>` : ''}
-                                        ${availScheds.has('Weekly') ? `<option value="Weekly" ${localFilterSchedule === 'Weekly' ? 'selected' : ''}>Weekly</option>` : ''}
-                                        ${availScheds.has('Monthly') ? `<option value="Monthly" ${localFilterSchedule === 'Monthly' ? 'selected' : ''}>Monthly</option>` : ''}
-                                        ${availScheds.has('Undated') ? `<option value="Undated" ${localFilterSchedule === 'Undated' ? 'selected' : ''}>Undated</option>` : ''}
-                                    </select>
-                                ` : ''}
-                                ${hasLocations ? `
-                                <select id="localFilterLocation" onchange="window.updateLocalFilters()" class="text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 rounded-lg p-1.5 outline-none focus:border-blue-500 transition shadow-sm">
-                                    <option value="all" ${localFilterLocation === 'all' ? 'selected' : ''}>すべての場所</option>
-                                    ${availLocs.has('home') ? `<option value="home" ${localFilterLocation === 'home' ? 'selected' : ''}>自宅</option>` : ''}
-                                    ${availLocs.has('work') ? `<option value="work" ${localFilterLocation === 'work' ? 'selected' : ''}>職場</option>` : ''}
-                                    ${availLocs.has('outing') ? `<option value="outing" ${localFilterLocation === 'outing' ? 'selected' : ''}>外出先</option>` : ''}
-                                </select>
-                                ` : ''}
-                                ${availPris.size > 0 ? `
-                                <select id="localFilterPriority" onchange="window.updateLocalFilters()" class="text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 rounded-lg p-1.5 outline-none focus:border-blue-500 transition shadow-sm">
-                                    <option value="all" ${localFilterPriority === 'all' ? 'selected' : ''}>すべての優先度</option>
-                                    ${availPris.has('high') ? `<option value="high" ${localFilterPriority === 'high' ? 'selected' : ''}>高</option>` : ''}
-                                    ${availPris.has('medium') ? `<option value="medium" ${localFilterPriority === 'medium' ? 'selected' : ''}>中</option>` : ''}
-                                    ${availPris.has('low') ? `<option value="low" ${localFilterPriority === 'low' ? 'selected' : ''}>低</option>` : ''}
-                                    ${availPris.has('none') ? `<option value="none" ${localFilterPriority === 'none' ? 'selected' : ''}>なし</option>` : ''}
-                                </select>
-                                ` : ''}
-                            </div>
-                            ` : ''}
-
-                            <div class="flex-1 overflow-y-auto overflow-x-hidden p-5 sm:px-8 lg:px-12 pb-56" id="mainContentArea">
-                                ${currentView === 'settings' ? renderSettings() : renderTaskList()}
+                            <div class="flex-1 overflow-y-auto overflow-x-hidden p-5 sm:px-8 lg:px-12 pb-56">
+                                ${currentView === 'settings' ? renderSettings() : (currentUser ? renderTaskList() : '')}
                             </div>
                         </main>
 
-                        <!-- 固定FAB -->
+                        ${currentUser ? `
                         <button onclick="window.openTaskModal()" class="fixed bottom-8 right-6 sm:bottom-10 sm:right-10 z-40 w-16 h-16 bg-blue-500 hover:bg-blue-600 text-white rounded-full flex items-center justify-center shadow-2xl transition transform hover:scale-105 active:scale-95 ${currentView === 'settings' ? 'hidden' : ''}">
                             <i data-lucide="plus" class="w-8 h-8"></i>
-                        </button>
+                        </button>` : ''}
                     </div>
 
-                    <!-- モーダル群 -->
                     ${isTaskModalOpen ? renderTaskModal() : ''}
                     ${pendingAiTask && !isSelectCategoryModalOpen ? renderAiConfirmModal() : ''}
                     ${customModal.isOpen ? renderCustomModal() : ''}
@@ -592,85 +442,64 @@
                 
                 if (typeof lucide !== 'undefined') lucide.createIcons();
                 else setTimeout(() => { if (typeof lucide !== 'undefined') lucide.createIcons(); }, 150);
-
-                if (currentView === 'home' || currentView === 'list') {
-                    if (window.initSortable) window.initSortable();
-                }
-
             } catch (err) {
                 console.error("Render Error:", err);
-                document.getElementById('app').innerHTML = `<div class="p-6 text-red-500 font-bold">Error: ${err.message}</div>`;
             }
         }
 
-        window.initSortable = () => {
-            const listEl = document.getElementById('categoryListContainer');
-            if (listEl && typeof Sortable !== 'undefined') {
-                if (window.sortableCategory) window.sortableCategory.destroy();
-                window.sortableCategory = new Sortable(listEl, {
-                    animation: 150, delay: 300, delayOnTouchOnly: true, fallbackTolerance: 5, filter: 'button, input, a, .prevent-drag',
-                    onEnd: (evt) => {
-                        const item = categories.splice(evt.oldIndex, 1)[0];
-                        categories.splice(evt.newIndex, 0, item);
-                        categories.forEach(c => saveCategoryToDB(c));
-                    }
-                });
-            }
-            const taskEl = document.getElementById('taskListContainer');
-            if (taskEl && typeof Sortable !== 'undefined') {
-                if (window.sortableTask) window.sortableTask.destroy();
-                window.sortableTask = new Sortable(taskEl, {
-                    animation: 150, delay: 300, delayOnTouchOnly: true, fallbackTolerance: 5, filter: 'button, input, a, textarea, .prevent-drag',
-                    onEnd: (evt) => {
-                        const taskNodes = Array.from(taskEl.children);
-                        const newOrderIds = taskNodes.map(node => node.dataset.taskId).filter(id => id);
-                        const movedTasks = newOrderIds.map(id => tasks.find(t => t.id === id)).filter(Boolean);
-                        tasks = tasks.filter(t => !newOrderIds.includes(t.id));
-                        tasks = [...movedTasks, ...tasks]; 
-                        tasks.forEach(t => saveTaskToDB(t));
-                    }
-                });
-            }
-        };
+        function renderLoginPrompt() {
+            return `
+                <div class="flex flex-col items-center justify-center py-20 text-center space-y-4">
+                    <div class="w-20 h-20 bg-blue-100 dark:bg-blue-900/30 text-blue-500 rounded-full flex items-center justify-center mb-2">
+                        <i data-lucide="cloud" class="w-10 h-10"></i>
+                    </div>
+                    <h3 class="font-bold text-lg text-gray-900 dark:text-white">クラウド同期</h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">Googleアカウントでログインすると、<br>複数端末でタスクをリアルタイム同期できます。</p>
+                    <button onclick="window.loginWithGoogle()" class="mt-4 bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-xl flex items-center gap-2 transition shadow-md">
+                        <i data-lucide="log-in" class="w-5 h-5"></i> Googleでログイン
+                    </button>
+                </div>
+            `;
+        }
 
         function renderHomeContent() {
             const counts = getCounts();
             return `
                 <div class="space-y-3">
                     <div class="grid grid-cols-3 gap-2">
-                        <div onclick="window.selectFilter('Today')" class="bg-blue-500 text-white p-3 rounded-2xl flex flex-col justify-between cursor-pointer shadow-sm hover:opacity-90 transition min-h-[5.5rem] ${selectedFilter === 'Today' && !selectedCategory ? 'ring-2 ring-blue-300 ring-offset-2 dark:ring-offset-gray-900' : ''}">
+                        <div onclick="window.selectFilter('Today')" class="bg-blue-500 text-white p-3 rounded-2xl flex flex-col justify-between cursor-pointer shadow-sm hover:opacity-90 transition min-h-[5.5rem] ${selectedFilter === 'Today' && !selectedCategory ? 'ring-2 ring-blue-300' : ''}">
                             <div class="flex justify-between items-start"><i data-lucide="calendar" class="w-5 h-5 opacity-80"></i><span class="text-xl font-bold leading-none">${counts.Today}</span></div>
                             <span class="text-xs font-semibold mt-1">Today</span>
                         </div>
-                        <div onclick="window.selectFilter('Week')" class="bg-indigo-500 text-white p-3 rounded-2xl flex flex-col justify-between cursor-pointer shadow-sm hover:opacity-90 transition min-h-[5.5rem] ${selectedFilter === 'Week' && !selectedCategory ? 'ring-2 ring-indigo-300 ring-offset-2 dark:ring-offset-gray-900' : ''}">
+                        <div onclick="window.selectFilter('Week')" class="bg-indigo-500 text-white p-3 rounded-2xl flex flex-col justify-between cursor-pointer shadow-sm hover:opacity-90 transition min-h-[5.5rem] ${selectedFilter === 'Week' && !selectedCategory ? 'ring-2 ring-indigo-300' : ''}">
                             <div class="flex justify-between items-start"><i data-lucide="calendar-days" class="w-5 h-5 opacity-80"></i><span class="text-xl font-bold leading-none">${counts.Week}</span></div>
                             <span class="text-xs font-semibold mt-1">Week</span>
                         </div>
-                        <div onclick="window.selectFilter('Month')" class="bg-purple-500 text-white p-3 rounded-2xl flex flex-col justify-between cursor-pointer shadow-sm hover:opacity-90 transition min-h-[5.5rem] ${selectedFilter === 'Month' && !selectedCategory ? 'ring-2 ring-purple-300 ring-offset-2 dark:ring-offset-gray-900' : ''}">
+                        <div onclick="window.selectFilter('Month')" class="bg-purple-500 text-white p-3 rounded-2xl flex flex-col justify-between cursor-pointer shadow-sm hover:opacity-90 transition min-h-[5.5rem] ${selectedFilter === 'Month' && !selectedCategory ? 'ring-2 ring-purple-300' : ''}">
                             <div class="flex justify-between items-start"><i data-lucide="calendar-range" class="w-5 h-5 opacity-80"></i><span class="text-xl font-bold leading-none">${counts.Month}</span></div>
                             <span class="text-xs font-semibold mt-1">Month</span>
                         </div>
                     </div>
                     <div class="grid grid-cols-3 gap-2">
-                        <div onclick="window.selectFilter('Daily')" class="bg-emerald-500 text-white p-3 rounded-2xl flex flex-col justify-between cursor-pointer shadow-sm hover:opacity-90 transition min-h-[5.5rem] ${selectedFilter === 'Daily' && !selectedCategory ? 'ring-2 ring-emerald-300 ring-offset-2 dark:ring-offset-gray-900' : ''}">
+                        <div onclick="window.selectFilter('Daily')" class="bg-emerald-500 text-white p-3 rounded-2xl flex flex-col justify-between cursor-pointer shadow-sm hover:opacity-90 transition min-h-[5.5rem] ${selectedFilter === 'Daily' && !selectedCategory ? 'ring-2 ring-emerald-300' : ''}">
                             <div class="flex justify-between items-start"><i data-lucide="repeat" class="w-5 h-5 opacity-80"></i><span class="text-xl font-bold leading-none">${counts.Daily}</span></div>
                             <span class="text-xs font-semibold mt-1">Daily</span>
                         </div>
-                        <div onclick="window.selectFilter('Weekly')" class="bg-teal-500 text-white p-3 rounded-2xl flex flex-col justify-between cursor-pointer shadow-sm hover:opacity-90 transition min-h-[5.5rem] ${selectedFilter === 'Weekly' && !selectedCategory ? 'ring-2 ring-teal-300 ring-offset-2 dark:ring-offset-gray-900' : ''}">
+                        <div onclick="window.selectFilter('Weekly')" class="bg-teal-500 text-white p-3 rounded-2xl flex flex-col justify-between cursor-pointer shadow-sm hover:opacity-90 transition min-h-[5.5rem] ${selectedFilter === 'Weekly' && !selectedCategory ? 'ring-2 ring-teal-300' : ''}">
                             <div class="flex justify-between items-start"><i data-lucide="repeat" class="w-5 h-5 opacity-80"></i><span class="text-xl font-bold leading-none">${counts.Weekly}</span></div>
                             <span class="text-xs font-semibold mt-1">Weekly</span>
                         </div>
-                        <div onclick="window.selectFilter('Monthly')" class="bg-cyan-500 text-white p-3 rounded-2xl flex flex-col justify-between cursor-pointer shadow-sm hover:opacity-90 transition min-h-[5.5rem] ${selectedFilter === 'Monthly' && !selectedCategory ? 'ring-2 ring-cyan-300 ring-offset-2 dark:ring-offset-gray-900' : ''}">
+                        <div onclick="window.selectFilter('Monthly')" class="bg-cyan-500 text-white p-3 rounded-2xl flex flex-col justify-between cursor-pointer shadow-sm hover:opacity-90 transition min-h-[5.5rem] ${selectedFilter === 'Monthly' && !selectedCategory ? 'ring-2 ring-cyan-300' : ''}">
                             <div class="flex justify-between items-start"><i data-lucide="repeat" class="w-5 h-5 opacity-80"></i><span class="text-xl font-bold leading-none">${counts.Monthly}</span></div>
                             <span class="text-xs font-semibold mt-1">Monthly</span>
                         </div>
                     </div>
                     <div class="grid grid-cols-2 gap-2">
-                        <div onclick="window.selectFilter('Undated')" class="bg-slate-500 text-white p-3 rounded-2xl flex flex-col justify-between cursor-pointer shadow-sm hover:opacity-90 transition min-h-[5rem] ${selectedFilter === 'Undated' && !selectedCategory ? 'ring-2 ring-slate-400 ring-offset-2 dark:ring-offset-gray-900' : ''}">
+                        <div onclick="window.selectFilter('Undated')" class="bg-slate-500 text-white p-3 rounded-2xl flex flex-col justify-between cursor-pointer shadow-sm hover:opacity-90 transition min-h-[5rem] ${selectedFilter === 'Undated' && !selectedCategory ? 'ring-2 ring-slate-400' : ''}">
                             <div class="flex justify-between items-start"><i data-lucide="help-circle" class="w-5 h-5 opacity-80"></i><span class="text-xl font-bold leading-none">${counts.Undated}</span></div>
                             <span class="text-xs font-semibold mt-1">Undated</span>
                         </div>
-                        <div onclick="window.selectFilter('Executed')" class="bg-gray-700 text-white p-3 rounded-2xl flex flex-col justify-between cursor-pointer shadow-sm hover:opacity-90 transition min-h-[5rem] ${selectedFilter === 'Executed' && !selectedCategory ? 'ring-2 ring-gray-400 ring-offset-2 dark:ring-offset-gray-900' : ''}">
+                        <div onclick="window.selectFilter('Executed')" class="bg-gray-700 text-white p-3 rounded-2xl flex flex-col justify-between cursor-pointer shadow-sm hover:opacity-90 transition min-h-[5rem] ${selectedFilter === 'Executed' && !selectedCategory ? 'ring-2 ring-gray-400' : ''}">
                             <div class="flex justify-between items-start"><i data-lucide="check-circle-2" class="w-5 h-5 opacity-80"></i><span class="text-xl font-bold leading-none">${counts.Executed}</span></div>
                             <span class="text-xs font-semibold mt-1">Executed</span>
                         </div>
@@ -679,871 +508,292 @@
 
                 <div class="mt-8 mb-2 flex items-center justify-between">
                     <h2 class="text-lg font-bold text-gray-800 dark:text-gray-200">マイリスト</h2>
-                    <button onclick="window.toggleListEditMode()" class="text-sm font-semibold flex items-center gap-1 ${isListEditMode ? 'text-blue-500 bg-blue-50 dark:bg-blue-900/40' : 'text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'} px-3 py-1.5 rounded-full transition cursor-pointer">
+                    <button onclick="window.toggleListEditMode()" class="text-sm font-semibold flex items-center gap-1 ${isListEditMode ? 'text-blue-500' : 'text-gray-500 hover:bg-gray-200'} px-3 py-1.5 rounded-full transition">
                         ${isListEditMode ? '完了' : '編集'}
                     </button>
                 </div>
 
-                <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm overflow-hidden mb-8 flex flex-col">
+                <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm overflow-hidden mb-8">
                     <div id="categoryListContainer" class="divide-y divide-gray-100 dark:divide-gray-700">
                         ${categories.map(cat => {
                             const count = tasks.filter(t => t.category === cat.name && (!t.completed || isActiveCompletedTask(t))).length;
                             const isSelected = selectedCategory === cat.name;
                             return `
-                                <div ${!isListEditMode ? `onclick="window.selectCategory('${escapeHtml(cat.name)}')" ` : ''} class="flex items-center justify-between p-4 select-none ${!isListEditMode ? 'hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer cursor-grab active:cursor-grabbing' : 'bg-gray-50/50 dark:bg-gray-800/50 cursor-grab active:cursor-grabbing'} ${isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : ''} transition">
-                                    <div class="flex items-center gap-3 truncate pr-2">
-                                        <div class="w-8 h-8 rounded-full ${escapeHtml(cat.color || 'bg-blue-500')} flex-shrink-0 flex items-center justify-center text-white text-sm shadow-sm">
-                                            ${renderIcon(cat.icon)}
-                                        </div>
-                                        <span class="font-medium text-gray-800 dark:text-gray-200 truncate ${isSelected ? 'text-blue-600 dark:text-blue-400 font-bold' : ''}">${escapeHtml(cat.name)}</span>
+                                <div ${!isListEditMode ? `onclick="window.selectCategory('${escapeHtml(cat.name)}')" ` : ''} class="flex items-center justify-between p-4 ${!isListEditMode ? 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700' : ''} ${isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : ''} transition">
+                                    <div class="flex items-center gap-3">
+                                        <div class="w-8 h-8 rounded-full ${escapeHtml(cat.color || 'bg-blue-500')} flex items-center justify-center text-white text-sm shadow-sm">${renderIcon(cat.icon)}</div>
+                                        <span class="font-medium ${isSelected ? 'text-blue-600 font-bold' : ''}">${escapeHtml(cat.name)}</span>
                                     </div>
-                                    <div class="flex items-center gap-1 sm:gap-2 flex-shrink-0">
-                                        ${!isListEditMode ? `
-                                            <span class="text-sm text-gray-400 font-semibold mr-1">${count}</span>
-                                            <i data-lucide="chevron-right" class="w-4 h-4 text-gray-400"></i>
-                                        ` : `
-                                            <button onclick="event.stopPropagation(); window.openCustomModal('editList', { id: '${cat.id}' })" class="p-1.5 text-gray-400 hover:text-blue-500 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-full transition"><i data-lucide="pencil" class="w-4 h-4"></i></button>
-                                            <button onclick="event.stopPropagation(); window.openCustomModal('deleteList', { id: '${cat.id}', name: '${escapeHtml(cat.name)}' })" class="p-1.5 text-gray-400 hover:text-red-500 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-full transition"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
-                                        `}
+                                    <div class="flex items-center gap-2">
+                                        ${!isListEditMode ? `<span class="text-sm text-gray-400 font-semibold">${count}</span><i data-lucide="chevron-right" class="w-4 h-4 text-gray-400"></i>` 
+                                        : `<button onclick="window.openCustomModal('editList', { id: '${cat.id}' })" class="p-1.5 text-gray-400 hover:text-blue-500"><i data-lucide="pencil" class="w-4 h-4"></i></button>
+                                           <button onclick="window.openCustomModal('deleteList', { id: '${cat.id}', name: '${escapeHtml(cat.name)}' })" class="p-1.5 text-gray-400 hover:text-red-500"><i data-lucide="trash-2" class="w-4 h-4"></i></button>`}
                                     </div>
                                 </div>
                             `;
                         }).join('')}
                     </div>
-                    ${isListEditMode ? `
-                        <div onclick="window.openCustomModal('addList')" class="flex items-center gap-3 p-4 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer transition text-blue-500 font-medium border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800">
-                            <div class="w-8 h-8 rounded-full bg-blue-50 dark:bg-blue-900/30 flex items-center justify-center border border-dashed border-blue-300 dark:border-blue-700">
-                                <i data-lucide="plus" class="w-5 h-5"></i>
-                            </div>
-                            新しいリストを作成
-                        </div>
-                    ` : ''}
+                    ${isListEditMode ? `<div onclick="window.openCustomModal('addList')" class="flex items-center gap-3 p-4 hover:bg-gray-50 cursor-pointer text-blue-500 font-medium border-t border-gray-100 dark:border-gray-700"><i data-lucide="plus" class="w-5 h-5"></i>新しいリストを作成</div>` : ''}
                 </div>
-                <div class="h-32 w-full flex-shrink-0 pointer-events-none"></div>
             `;
         }
 
         function renderTaskList() {
-            const todayStr = getTodayStr();
             let filteredTasks = tasks.filter(t => {
-                if (selectedFilter === 'Executed' && !selectedCategory) {
-                    if (t.completed && !isActiveCompletedTask(t)) return true;
-                    return false;
-                }
-
+                if (selectedFilter === 'Executed' && !selectedCategory) { return t.completed; }
                 if (selectedCategory) {
                     if (t.category !== selectedCategory) return false;
                     if (t.completed && !isActiveCompletedTask(t)) return false; 
                 }
-
                 if (!selectedCategory && selectedFilter && selectedFilter !== 'Executed') {
                     if (t.completed) {
-                        // Daily, Weekly, Monthly フィルターの場合のみ期限満了まで完了済みを表示
                         if (['Daily', 'Weekly', 'Monthly'].includes(selectedFilter)) {
                             if (!isActiveCompletedTask(t)) return false;
-                        } else {
-                            // Today, Week, Month, Undated では完了タスクを表示しない
-                            return false;
-                        }
+                        } else { return false; }
                     }
-
-                    let matchFilter = false;
-                    if (selectedFilter === 'Today') matchFilter = isTodayTask(t);
-                    else if (selectedFilter === 'Week') matchFilter = isWeekTask(t);
-                    else if (selectedFilter === 'Month') matchFilter = isMonthTask(t);
-                    else {
-                        const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
-                        if (selectedFilter === 'Daily') matchFilter = schedBase === 'Daily';
-                        else if (selectedFilter === 'Weekly') matchFilter = schedBase === 'Weekly';
-                        else if (selectedFilter === 'Monthly') matchFilter = schedBase === 'Monthly';
-                        else if (selectedFilter === 'Undated') matchFilter = !t.schedule || t.schedule === '';
-                    }
-                    if (!matchFilter) return false;
+                    let match = false;
+                    if (selectedFilter === 'Today') match = isTodayTask(t);
+                    else if (selectedFilter === 'Week') match = isWeekTask(t);
+                    else if (selectedFilter === 'Month') match = isMonthTask(t);
+                    else if (selectedFilter === 'Daily') match = t.schedule === 'Daily';
+                    else if (selectedFilter === 'Weekly') match = t.schedule === 'Weekly';
+                    else if (selectedFilter === 'Monthly') match = t.schedule === 'Monthly';
+                    else if (selectedFilter === 'Undated') match = !t.schedule || t.schedule === '';
+                    if (!match) return false;
                 }
-
-                if (localFilterLocation !== 'all' && t.location !== localFilterLocation) return false;
-                if (localFilterPriority !== 'all' && t.priority !== localFilterPriority) return false;
-                if (localFilterCategory !== 'all' && t.category !== localFilterCategory) return false;
-                if (localFilterSchedule !== 'all') {
-                    // ローカルフィルターで Today, Week, Month, Undated が選ばれた場合も完了済みは除外
-                    if (t.completed && ['Today', 'Week', 'Month', 'Undated'].includes(localFilterSchedule)) {
-                        return false;
-                    }
-                    let matchLocalSchedule = false;
-                    const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
-                    if (localFilterSchedule === 'Today') matchLocalSchedule = isTodayTask(t);
-                    else if (localFilterSchedule === 'Week') matchLocalSchedule = isWeekTask(t);
-                    else if (localFilterSchedule === 'Month') matchLocalSchedule = isMonthTask(t);
-                    else if (localFilterSchedule === 'Daily') matchLocalSchedule = schedBase === 'Daily';
-                    else if (localFilterSchedule === 'Weekly') matchLocalSchedule = schedBase === 'Weekly';
-                    else if (localFilterSchedule === 'Monthly') matchLocalSchedule = schedBase === 'Monthly';
-                    else if (localFilterSchedule === 'Undated') matchLocalSchedule = (!t.schedule || t.schedule === '');
-                    
-                    if (!matchLocalSchedule) return false;
-                }
-
                 return true;
             });
 
-            if (searchQuery) {
-                filteredTasks = filteredTasks.filter(t => t.title.toLowerCase().includes(searchQuery.toLowerCase()));
-            }
+            const active = filteredTasks.filter(t => !t.completed);
+            const completed = filteredTasks.filter(t => t.completed);
+            filteredTasks = [...active, ...completed];
 
-            const activeFiltered = filteredTasks.filter(t => !t.completed);
-            const completedFiltered = filteredTasks.filter(t => t.completed);
-            filteredTasks = [...activeFiltered, ...completedFiltered];
+            if (filteredTasks.length === 0) return `<div class="flex flex-col items-center justify-center py-32 text-gray-400"><i data-lucide="check-circle" class="w-16 h-16 mb-4 opacity-30"></i><p>タスクはありません</p></div>`;
 
-            return `
-                <div class="space-y-3" id="taskListContainer">
-                    ${filteredTasks.length === 0 ? `
-                        <div class="flex flex-col items-center justify-center py-32 text-gray-400 h-full w-full">
-                            <i data-lucide="check-circle" class="w-16 h-16 mb-4 opacity-30"></i>
-                            <p class="text-lg font-medium text-gray-500">タスクはありません</p>
-                        </div>
-                    ` : filteredTasks.map(task => {
-                        const isCompleted = task.completed;
-                        const schedBase = (task.schedule || '').replace('_Completed', '').replace('_Expired', '');
-                        let displaySchedule = escapeHtml(schedBase);
-                        
-                        if (schedBase === 'Weekly') {
-                            if (task.recurringDetail !== undefined && task.recurringDetail !== '') {
-                                const days = ['日', '月', '火', '水', '木', '金', '土'];
-                                displaySchedule = `毎週${days[parseInt(task.recurringDetail)]}曜`;
-                            }
-                        } else if (schedBase === 'Monthly') {
-                            if (task.recurringDetail !== undefined && task.recurringDetail !== '') {
-                                displaySchedule = task.recurringDetail === 'last' ? '毎月末' : `毎月${task.recurringDetail}日`;
-                            }
+            return `<div class="space-y-3" id="taskListContainer">
+                ${filteredTasks.map(task => {
+                    const isComp = task.completed;
+                    let displaySch = escapeHtml((task.schedule || '').replace('_Expired', ''));
+                    if (task.schedule === 'Weekly' || task.schedule === 'Weekly_Expired') {
+                        if (task.recurringDetail !== undefined && task.recurringDetail !== '') {
+                            const days = ['日', '月', '火', '水', '木', '金', '土'];
+                            displaySch = `毎週${days[parseInt(task.recurringDetail)]}曜`;
                         }
+                    } else if (task.schedule === 'Monthly' || task.schedule === 'Monthly_Expired') {
+                        if (task.recurringDetail !== undefined && task.recurringDetail !== '') {
+                            displaySch = task.recurringDetail === 'last' ? '毎月末' : `毎月${task.recurringDetail}日`;
+                        }
+                    }
 
-                        const taskCardClass = isCompleted 
-                            ? "bg-gray-50/50 dark:bg-gray-800/50 p-4 sm:p-5 rounded-2xl border border-gray-200 dark:border-gray-700 flex items-start justify-between gap-4 transition group opacity-70 hover:opacity-100 cursor-grab active:cursor-grabbing select-none"
-                            : "bg-white dark:bg-gray-800 p-4 sm:p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex items-start justify-between gap-4 transition hover:shadow-md group cursor-grab active:cursor-grabbing select-none";
-
-                        return `
-                        <div class="${taskCardClass}" data-task-id="${task.id}">
-                            <div class="flex items-start gap-3 flex-1 min-w-0">
-                                <input type="checkbox" ${isCompleted ? 'checked' : ''} onchange="window.toggleTaskComplete('${task.id}')" class="mt-1 w-6 h-6 rounded-full border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer flex-shrink-0 transition-colors">
-                                <div class="flex-1 min-w-0">
-                                    <p class="font-medium text-base text-gray-800 dark:text-gray-100 break-words ${isCompleted ? 'line-through text-gray-400 dark:text-gray-500' : ''}">${escapeHtml(task.title)}</p>
-                                    
-                                    ${task.url ? `<a href="${escapeHtml(task.url)}" target="_blank" class="text-blue-500 hover:underline text-sm flex items-center mt-1 prevent-drag" onclick="event.stopPropagation()"><i data-lucide="link" class="w-3.5 h-3.5 mr-1"></i>リンクを開く</a>` : ''}
-                                    
-                                    ${task.memo ? `
-                                        <div class="mt-2 text-sm text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-900/50 p-3 rounded-xl border border-gray-100 dark:border-gray-700">
-                                            ${task.memo.length > 50 || task.memo.includes('\n') ? `
-                                                <div id="memo-${task.id}" class="line-clamp-2 cursor-pointer prevent-drag" onclick="this.classList.toggle('line-clamp-2')">
-                                                    ${escapeHtml(task.memo).replace(/\n/g, '<br>')}
-                                                </div>
-                                                <div class="text-xs text-blue-500 cursor-pointer mt-1 font-semibold prevent-drag" onclick="document.getElementById('memo-${task.id}').classList.toggle('line-clamp-2')">続きを読む / 閉じる</div>
-                                            ` : `<div>${escapeHtml(task.memo).replace(/\n/g, '<br>')}</div>`}
-                                        </div>
-                                    ` : ''}
-
-                                    ${task.subtasks && task.subtasks.length > 0 ? `
-                                        <div class="mt-3 space-y-2 border-t border-gray-100 dark:border-gray-700 pt-3">
-                                            ${task.subtasks.map((st, i) => `
-                                                <div class="flex items-center gap-2">
-                                                    <input type="checkbox" ${st.completed ? 'checked' : ''} onchange="window.toggleListSubtask('${task.id}', ${i})" class="w-4 h-4 rounded text-blue-500 focus:ring-blue-500 cursor-pointer">
-                                                    <span class="text-sm break-words ${st.completed ? 'line-through text-gray-400' : 'text-gray-700 dark:text-gray-200'}">${escapeHtml(st.title)}</span>
-                                                </div>
-                                            `).join('')}
-                                        </div>
-                                    ` : ''}
-
-                                    ${task.attachments && task.attachments.length > 0 ? `
-                                        <div class="flex flex-wrap gap-2 mt-3">
-                                            ${task.attachments.map(att => `
-                                                ${att.type.startsWith('image/') ? `
-                                                    <div onclick="window.openImageViewer('${att.data}')" class="block w-16 h-16 rounded-lg overflow-hidden border border-gray-200 hover:opacity-80 transition cursor-zoom-in prevent-drag">
-                                                        <img src="${att.data}" class="w-full h-full object-cover">
-                                                    </div>
-                                                ` : `
-                                                    <a href="${att.data}" download="${att.name}" class="flex items-center gap-1 bg-gray-100 dark:bg-gray-700 px-2 py-1.5 rounded-lg text-xs font-semibold text-gray-600 hover:bg-gray-200 transition border border-gray-200 dark:border-gray-600 prevent-drag" onclick="event.stopPropagation()">
-                                                        <i data-lucide="file-text" class="w-4 h-4"></i> ${escapeHtml(att.name)}
-                                                    </a>
-                                                `}
-                                            `).join('')}
-                                        </div>
-                                    ` : ''}
-
-                                    <div class="flex flex-wrap items-center gap-2 mt-3 text-xs text-gray-500">
-                                        ${task.category ? `<span class="bg-gray-100 dark:bg-gray-700/50 px-2.5 py-1 rounded-md font-medium text-gray-600 dark:text-gray-300">${escapeHtml(task.category)}</span>` : ''}
-                                        ${displaySchedule ? `<span class="bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-2.5 py-1 rounded-md font-medium">${displaySchedule}</span>` : ''}
-                                        ${task.dueDate ? `<span class="${!isCompleted && task.dueDate < todayStr ? 'bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800' : 'bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400'} px-2.5 py-1 rounded-md font-semibold flex items-center"><i data-lucide="${!isCompleted && task.dueDate < todayStr ? 'alert-circle' : 'clock'}" class="w-3.5 h-3.5 mr-1"></i>${escapeHtml(task.dueDate)}${!isCompleted && task.dueDate < todayStr ? ' (期限切れ)' : ''}</span>` : ''}
-                                        ${!isCompleted && task.priority && task.priority !== 'none' ? `<span class="px-2.5 py-1 rounded-md font-bold ${task.priority === 'high' ? 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400' : task.priority === 'medium' ? 'bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400' : 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'}">${escapeHtml(task.priority).toUpperCase()}</span>` : ''}
-                                        ${task.location && task.location !== 'none' ? `<span class="bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 px-2.5 py-1 rounded-md font-semibold flex items-center"><i data-lucide="map-pin" class="w-3.5 h-3.5 mr-1"></i>${task.location === 'home' ? '自宅' : task.location === 'work' ? '職場' : '外出先'}</span>` : ''}
-                                        ${isCompleted && task.completedAt ? `<span class="bg-green-50 dark:bg-green-900/30 text-green-600 dark:text-green-400 px-2.5 py-1 rounded-md font-semibold flex items-center"><i data-lucide="check" class="w-3.5 h-3.5 mr-1"></i>${new Date(task.completedAt).toLocaleString('ja-JP', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' })} 完了</span>` : ''}
-                                    </div>
+                    return `
+                    <div class="bg-white dark:bg-gray-800 p-4 sm:p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex items-start justify-between gap-4 transition group ${isComp ? 'opacity-70 bg-gray-50 dark:bg-gray-800/50' : ''}">
+                        <div class="flex items-start gap-3 flex-1 min-w-0">
+                            <input type="checkbox" ${isComp ? 'checked' : ''} onchange="window.toggleTaskComplete('${task.id}')" class="mt-1 w-6 h-6 rounded-full border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer">
+                            <div class="flex-1 min-w-0">
+                                <p class="font-medium text-base ${isComp ? 'line-through text-gray-400' : ''}">${escapeHtml(task.title)}</p>
+                                ${task.memo ? `<div class="mt-2 text-sm text-gray-600 bg-gray-50 dark:bg-gray-900/50 p-3 rounded-xl">${escapeHtml(task.memo).replace(/\n/g, '<br>')}</div>` : ''}
+                                <div class="flex flex-wrap items-center gap-2 mt-3 text-xs text-gray-500">
+                                    ${task.category ? `<span class="bg-gray-100 dark:bg-gray-700 px-2.5 py-1 rounded-md">${escapeHtml(task.category)}</span>` : ''}
+                                    ${displaySch ? `<span class="bg-blue-50 text-blue-600 dark:bg-blue-900/30 px-2.5 py-1 rounded-md">${displaySch}</span>` : ''}
+                                    ${task.dueDate ? `<span class="${!isComp && task.dueDate < getTodayStr() ? 'text-red-500' : ''}">${escapeHtml(task.dueDate)}</span>` : ''}
                                 </div>
                             </div>
-                            <div class="flex flex-col items-center gap-2 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                                <button onclick="window.editTask('${task.id}')" class="p-2 text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-gray-700 rounded-full transition"><i data-lucide="edit-3" class="w-4.5 h-4.5"></i></button>
-                                <button onclick="window.openCustomModal('deleteTask', { id: '${task.id}' })" class="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-gray-700 rounded-full transition"><i data-lucide="trash-2" class="w-4.5 h-4.5"></i></button>
-                            </div>
                         </div>
-                        `;
-                    }).join('')}
-                    <div class="h-36 w-full flex-shrink-0 pointer-events-none"></div>
-                </div>
-            `;
+                        <div class="flex flex-col gap-2">
+                            <button onclick="window.editTask('${task.id}')" class="p-2 text-gray-400 hover:text-blue-500"><i data-lucide="edit-3" class="w-4 h-4"></i></button>
+                            <button onclick="window.openCustomModal('deleteTask', { id: '${task.id}' })" class="p-2 text-gray-400 hover:text-red-500"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                        </div>
+                    </div>`;
+                }).join('')}
+            </div>`;
         }
 
         function renderSettings() {
             return `
                 <div class="max-w-2xl w-full mx-auto space-y-6">
                     <div class="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-800 space-y-6">
-                        <h3 class="font-bold text-lg border-b border-gray-100 dark:border-gray-700 pb-3 text-gray-900 dark:text-white">アカウント・同期</h3>
-                        ${currentUser && !currentUser.isAnonymous ? `
-                            <div class="flex items-center gap-3 mb-4">
-                                <div class="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-500 font-bold">
-                                    ${currentUser.displayName ? currentUser.displayName.charAt(0) : 'U'}
-                                </div>
+                        <h3 class="font-bold text-lg border-b border-gray-100 dark:border-gray-700 pb-3 text-gray-900 dark:text-white">アカウント設定</h3>
+                        ${currentUser ? `
+                            <div class="flex items-center gap-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
+                                <img src="${currentUser.photoURL || ''}" class="w-12 h-12 rounded-full bg-blue-200">
                                 <div>
-                                    <p class="font-bold text-gray-900 dark:text-white">${currentUser.displayName || 'Google ユーザー'}</p>
-                                    <p class="text-xs text-gray-500">${currentUser.email}</p>
+                                    <p class="font-bold text-gray-900 dark:text-white">${escapeHtml(currentUser.displayName)}</p>
+                                    <p class="text-sm text-gray-500">${escapeHtml(currentUser.email)}</p>
                                 </div>
                             </div>
-                            <button onclick="window.logout()" class="w-full bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-bold py-3 px-4 rounded-xl transition">ログアウト</button>
+                            <button onclick="window.logout()" class="w-full bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-white font-bold p-3 rounded-xl transition">ログアウト</button>
                         ` : `
-                            <p class="text-sm text-gray-600 dark:text-gray-300">Googleアカウントでログインすると、他の端末とデータをリアルタイムに同期できます。</p>
-                            <button onclick="window.loginWithGoogle()" class="w-full flex justify-center items-center gap-2 bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-xl transition shadow-md">
-                                <svg class="w-5 h-5 bg-white rounded-full p-0.5" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
-                                Googleでログイン
+                            <p class="text-sm text-gray-500">現在ログインしていません。</p>
+                            <button onclick="window.loginWithGoogle()" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold p-3 rounded-xl flex items-center justify-center gap-2 transition">
+                                <i data-lucide="log-in" class="w-5 h-5"></i> Googleでログイン
                             </button>
                         `}
                     </div>
-                    <div class="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-800 space-y-6">
-                        <h3 class="font-bold text-lg border-b border-gray-100 dark:border-gray-700 pb-3 text-gray-900 dark:text-white">データ管理</h3>
-                        <div class="pt-2 border-t border-gray-100 dark:border-gray-700">
-                            <button onclick="if(confirm('全てのデータを消去して初期状態に戻しますか？')) { localStorage.clear(); location.reload(); }" class="text-sm text-red-500 font-semibold hover:underline">データを完全にリセット</button>
-                        </div>
-                    </div>
                 </div>
             `;
         }
 
+        // モーダル等
         function renderCustomModal() {
             if (customModal.type === 'addList' || customModal.type === 'editList') return renderCategoryModal();
-
             let title = '', content = '', actionBtn = '';
             if (customModal.type === 'deleteList') {
                 title = 'リストの削除';
-                content = `<p class="text-sm text-gray-600 dark:text-gray-300 mt-2 break-words">リスト「${escapeHtml(customModal.data.name)}」を削除しますか？<br><span class="text-xs text-red-500">※リスト内のタスクは消えません（カテゴリ未設定になります）</span></p>`;
-                actionBtn = `<button onclick="window.handleModalSubmit()" class="flex-1 bg-red-500 hover:bg-red-600 text-white font-semibold p-3 rounded-xl transition">削除する</button>`;
+                content = `<p class="text-sm">リスト「${escapeHtml(customModal.data.name)}」を削除しますか？<br><span class="text-xs text-red-500">※中のタスクは消えません</span></p>`;
+                actionBtn = `<button onclick="window.handleModalSubmit()" class="flex-1 bg-red-500 text-white font-semibold p-3 rounded-xl">削除する</button>`;
             } else if (customModal.type === 'deleteTask') {
                 title = 'タスクの削除';
-                content = `<p class="text-sm text-gray-600 dark:text-gray-300 mt-2">このタスクを完全に削除しますか？</p>`;
-                actionBtn = `<button onclick="window.handleModalSubmit()" class="flex-1 bg-red-500 hover:bg-red-600 text-white font-semibold p-3 rounded-xl transition">削除する</button>`;
+                content = `<p class="text-sm">完全に削除しますか？</p>`;
+                actionBtn = `<button onclick="window.handleModalSubmit()" class="flex-1 bg-red-500 text-white font-semibold p-3 rounded-xl">削除する</button>`;
             }
-
-            return `
-                <div class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-                    <div class="bg-white dark:bg-gray-900 w-full max-w-sm rounded-2xl p-6 shadow-2xl">
-                        <h3 class="font-bold text-lg text-gray-900 dark:text-white">${title}</h3>
-                        ${content}
-                        <div class="flex gap-2 mt-6">
-                            <button onclick="window.closeCustomModal()" class="flex-1 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-semibold p-3 rounded-xl transition">キャンセル</button>
-                            ${actionBtn}
-                        </div>
+            return `<div class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+                <div class="bg-white dark:bg-gray-900 w-full max-w-sm rounded-2xl p-6 shadow-2xl">
+                    <h3 class="font-bold text-lg">${title}</h3>${content}
+                    <div class="flex gap-2 mt-6">
+                        <button onclick="window.closeCustomModal()" class="flex-1 bg-gray-200 dark:bg-gray-700 font-semibold p-3 rounded-xl">キャンセル</button>${actionBtn}
                     </div>
-                </div>
-            `;
+                </div></div>`;
         }
 
         function renderCategoryModal() {
-            return `
-                <div class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
-                    <div class="bg-white dark:bg-gray-900 w-full max-w-md rounded-t-3xl sm:rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
-                        <div class="p-6 flex-1 overflow-y-auto space-y-6">
-                            <div class="flex justify-center -mt-2 mb-4">
-                                <div class="w-16 h-16 rounded-full shadow-lg flex items-center justify-center text-white text-3xl ${categoryFormState.color}">
-                                    ${renderIcon(categoryFormState.icon)}
-                                </div>
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-gray-500 mb-1.5">カテゴリ名</label>
-                                <input type="text" value="${escapeHtml(categoryFormState.name)}" oninput="window.updateCategoryName(this.value)" placeholder="リスト名を入力" class="w-full bg-transparent border-b-2 border-gray-300 dark:border-gray-700 p-2 outline-none focus:border-blue-500 text-lg font-bold text-gray-900 dark:text-white transition">
-                            </div>
-                            <div class="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-2xl">
-                                <label class="block text-xs font-semibold text-gray-500 mb-3">カラー</label>
-                                <div class="flex flex-wrap gap-3">
-                                    ${availableColors.map(color => `
-                                        <button onclick="window.updateCategoryForm('color', '${color}')" class="w-10 h-10 rounded-full ${color} flex items-center justify-center transition transform hover:scale-110 ${categoryFormState.color === color ? 'ring-4 ring-offset-2 ring-gray-300 dark:ring-gray-600' : ''}">
-                                            ${categoryFormState.color === color ? '<i data-lucide="check" class="w-5 h-5 text-white"></i>' : ''}
-                                        </button>
-                                    `).join('')}
-                                </div>
-                            </div>
-                            <div class="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-2xl">
-                                <label class="block text-xs font-semibold text-gray-500 mb-3">アイコン</label>
-                                <div class="grid grid-cols-6 sm:grid-cols-8 gap-3 max-h-[30vh] overflow-y-auto pr-1">
-                                    ${availableIcons.map(icon => `
-                                        <button onclick="window.updateCategoryForm('icon', '${icon}')" class="w-10 h-10 rounded-xl flex items-center justify-center transition ${categoryFormState.icon === icon ? 'bg-gray-300 dark:bg-gray-600 text-gray-900 dark:text-white shadow-inner' : 'text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700'}">
-                                            <i data-lucide="${icon}" class="w-5 h-5"></i>
-                                        </button>
-                                    `).join('')}
-                                </div>
-                            </div>
-                        </div>
-                        <div class="p-4 border-t border-gray-100 dark:border-gray-800 flex gap-2 bg-white dark:bg-gray-900">
-                            <button onclick="window.closeCustomModal()" class="flex-1 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-200 font-bold p-4 rounded-xl transition">キャンセル</button>
-                            <button onclick="window.handleModalSubmit()" class="flex-1 bg-blue-500 hover:bg-blue-600 text-white font-bold p-4 rounded-xl transition shadow-md">保存</button>
-                        </div>
+            return `<div class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+                <div class="bg-white dark:bg-gray-900 w-full max-w-md rounded-2xl shadow-2xl p-6">
+                    <input type="text" value="${escapeHtml(categoryFormState.name)}" oninput="categoryFormState.name = this.value" placeholder="リスト名" class="w-full bg-transparent border-b-2 border-gray-300 p-2 mb-4 outline-none text-lg font-bold">
+                    <div class="flex gap-2 mb-4">
+                        <button onclick="window.closeCustomModal()" class="flex-1 bg-gray-100 p-3 rounded-xl">キャンセル</button>
+                        <button onclick="window.handleModalSubmit()" class="flex-1 bg-blue-500 text-white p-3 rounded-xl">保存</button>
                     </div>
-                </div>
-            `;
+                </div></div>`;
         }
 
         function renderTaskModal() {
-            const currentTask = editingTask || taskFormDraft;
-            const schedBase = currentTask ? (currentTask.schedule || '').replace('_Completed', '').replace('_Expired', '') : '';
-            const isCustom = schedBase === 'Custom';
-            const displaySchedule = currentTask ? schedBase : defaultSchedule;
-
-            return `
-                <div class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
-                    <div class="bg-white dark:bg-gray-900 w-full sm:max-w-lg rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[90vh]">
-                        <div class="flex items-center justify-between p-4 border-b border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900 rounded-t-3xl sm:rounded-2xl z-10 flex-shrink-0">
-                            <button onclick="window.closeTaskModal()" class="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 transition"><i data-lucide="x" class="w-6 h-6"></i></button>
-                            <h3 class="font-bold text-lg text-gray-900 dark:text-white">${editingTask ? '編集' : '新規タスク'}</h3>
-                            <button onclick="document.getElementById('taskFormSubmitBtn').click()" class="p-2 rounded-full hover:bg-blue-50 dark:hover:bg-blue-900/30 text-blue-500 transition"><i data-lucide="check" class="w-6 h-6"></i></button>
-                        </div>
-
-                        <form id="taskForm" onsubmit="window.handleTaskSubmit(event)" class="flex-1 overflow-y-auto p-6 space-y-5 pb-32">
-                            <button type="submit" id="taskFormSubmitBtn" class="hidden"></button>
-                            
-                            <div>
-                                <input type="text" id="taskTitle" required value="${currentTask ? escapeHtml(currentTask.title) : ''}" placeholder="タスクを入力" class="w-full bg-transparent border-b-2 border-gray-300 dark:border-gray-700 p-2 outline-none focus:border-blue-500 text-xl font-bold text-gray-900 dark:text-white transition">
-                            </div>
-                            
-                            <div class="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block text-xs font-semibold text-gray-500 mb-1.5">カテゴリ</label>
-                                    <select id="taskCategory" class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-3 text-sm outline-none focus:border-blue-500 text-gray-900 dark:text-white transition">
-                                        <option value="">自動分類 (AI)</option>
-                                        ${categories.map(c => `<option value="${escapeHtml(c.name)}" ${currentTask && currentTask.category === c.name ? 'selected' : (defaultCategory === c.name ? 'selected' : '')}>${c.name}</option>`).join('')}
-                                    </select>
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-semibold text-gray-500 mb-1.5">優先度</label>
-                                    <select id="taskPriority" class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-3 text-sm outline-none focus:border-blue-500 text-gray-900 dark:text-white transition">
-                                        <option value="none" ${(!currentTask || currentTask.priority === 'none') ? 'selected' : ''}>なし</option>
-                                        <option value="low" ${currentTask && currentTask.priority === 'low' ? 'selected' : ''}>低</option>
-                                        <option value="medium" ${currentTask && currentTask.priority === 'medium' ? 'selected' : ''}>中</option>
-                                        <option value="high" ${currentTask && currentTask.priority === 'high' ? 'selected' : ''}>高</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div>
-                                <label class="block text-xs font-semibold text-gray-500 mb-1.5">期限</label>
-                                <select id="taskSchedule" onchange="window.toggleScheduleDetails()" class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-3 text-sm outline-none focus:border-blue-500 text-gray-900 dark:text-white transition">
-                                    <option value="">なし</option>
-                                    <option value="Today" ${displaySchedule === 'Today' ? 'selected' : ''}>Today</option>
-                                    <option value="Week" ${displaySchedule === 'Week' ? 'selected' : ''}>Week</option>
-                                    <option value="Month" ${displaySchedule === 'Month' ? 'selected' : ''}>Month</option>
-                                    <option value="Daily" ${displaySchedule === 'Daily' ? 'selected' : ''}>Daily</option>
-                                    <option value="Weekly" ${displaySchedule === 'Weekly' ? 'selected' : ''}>Weekly</option>
-                                    <option value="Monthly" ${displaySchedule === 'Monthly' ? 'selected' : ''}>Monthly</option>
-                                    <option value="Custom" ${isCustom ? 'selected' : ''}>直接日付を選択</option>
-                                </select>
-                            </div>
-                            <div id="recurringDetailContainer" class="hidden">
-                                <label class="block text-xs font-semibold text-gray-500 mb-1.5" id="recurringDetailLabel">詳細</label>
-                                <select id="taskRecurringDetail" class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-3 text-sm outline-none focus:border-blue-500 text-gray-900 dark:text-white transition"></select>
-                            </div>
-                            <div id="customDateContainer" class="${isCustom ? '' : 'hidden'}">
-                                <label class="block text-xs font-semibold text-gray-500 mb-1.5">日付を選択</label>
-                                <input type="date" id="taskCustomDate" value="${isCustom && currentTask.dueDate ? currentTask.dueDate : ''}" class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-3 text-sm outline-none focus:border-blue-500 text-gray-900 dark:text-white transition">
-                            </div>
-
-                            <div>
-                                <label class="block text-xs font-semibold text-gray-500 mb-1.5">場所</label>
-                                <select id="taskLocation" class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-3 text-sm outline-none focus:border-blue-500 text-gray-900 dark:text-white transition">
-                                    <option value="none" ${!currentTask || currentTask.location === 'none' || !currentTask.location ? 'selected' : ''}>指定なし</option>
-                                    <option value="home" ${currentTask && currentTask.location === 'home' ? 'selected' : ''}>自宅</option>
-                                    <option value="work" ${currentTask && currentTask.location === 'work' ? 'selected' : ''}>職場</option>
-                                    <option value="outing" ${currentTask && currentTask.location === 'outing' ? 'selected' : ''}>外出先</option>
-                                </select>
-                            </div>
-
-                            <div>
-                                <label class="block text-xs font-semibold text-gray-500 mb-1.5"><i data-lucide="link" class="w-3.5 h-3.5 inline mr-1"></i>URL (任意)</label>
-                                <input type="url" id="taskUrl" value="${currentTask ? escapeHtml(currentTask.url) : ''}" placeholder="https://..." class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-3 text-sm outline-none focus:border-blue-500 text-gray-900 dark:text-white transition">
-                            </div>
-
-                            <div>
-                                <label class="block text-xs font-semibold text-gray-500 mb-1.5"><i data-lucide="align-left" class="w-3.5 h-3.5 inline mr-1"></i>メモ</label>
-                                <textarea id="taskMemo" rows="3" oninput="window.updateTempMemo(this.value)" placeholder="メモを入力..." class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-3 text-sm outline-none focus:border-blue-500 text-gray-900 dark:text-white transition resize-none">${escapeHtml(tempMemo)}</textarea>
-                            </div>
-
-                            <div>
-                                <label class="block text-xs font-semibold text-gray-500 mb-1.5"><i data-lucide="check-square" class="w-3.5 h-3.5 inline mr-1"></i>サブタスク</label>
-                                <div class="space-y-2 mb-2" id="subtasksContainer">
-                                    ${taskFormSubtasks.map((st, i) => `
-                                        <div class="flex items-center gap-2 bg-gray-50 dark:bg-gray-800 p-2 rounded-lg border border-gray-200 dark:border-gray-700">
-                                            <input type="text" value="${escapeHtml(st.title)}" oninput="window.updateSubtaskTitle(${i}, this.value)" class="flex-1 bg-transparent outline-none text-sm text-gray-900 dark:text-white">
-                                            <button type="button" onclick="window.removeSubtask(${i})" class="p-1 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded"><i data-lucide="x" class="w-4 h-4"></i></button>
-                                        </div>
-                                    `).join('')}
-                                </div>
-                                <div class="flex items-center gap-2">
-                                    <input type="text" id="newSubtaskInput" placeholder="サブタスクを追加..." class="flex-1 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-3 text-sm outline-none focus:border-blue-500 text-gray-900 dark:text-white transition">
-                                    <button type="button" onclick="window.addSubtask()" class="bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 p-3 rounded-xl hover:bg-blue-200 transition font-bold">追加</button>
-                                </div>
-                            </div>
-
-                            <div>
-                                <label class="block text-xs font-semibold text-gray-500 mb-1.5"><i data-lucide="paperclip" class="w-3.5 h-3.5 inline mr-1"></i>添付ファイル (写真 / PDF)</label>
-                                <div class="flex flex-wrap gap-2 mb-2" id="attachmentsContainer">
-                                    ${taskFormAttachments.map((att, i) => `
-                                        <div class="relative w-20 h-20 rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 group">
-                                            ${att.type.startsWith('image/') 
-                                                ? `<img src="${att.data}" class="w-full h-full object-cover cursor-zoom-in" onclick="window.openImageViewer('${att.data}')">` 
-                                                : `<div class="w-full h-full bg-gray-100 flex flex-col items-center justify-center text-xs text-gray-500 font-bold"><i data-lucide="file-text" class="w-6 h-6 mb-1"></i>PDF</div>`
-                                            }
-                                            <button type="button" onclick="window.removeAttachment(${i})" class="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition z-10"><i data-lucide="x" class="w-3 h-3"></i></button>
-                                        </div>
-                                    `).join('')}
-                                </div>
-                                <button type="button" onclick="document.getElementById('taskAttachmentInput').click()" class="w-full border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-4 text-sm text-gray-500 hover:text-blue-500 hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-gray-800 transition flex items-center justify-center gap-2 font-semibold">
-                                    <i data-lucide="camera" class="w-5 h-5"></i>ファイルを選択 / 撮影
-                                </button>
-                                <input type="file" id="taskAttachmentInput" class="hidden" accept="image/*,application/pdf" multiple onchange="window.handleFileUpload(event)">
-                            </div>
-
-                        </form>
+            const isCustom = editingTask && editingTask.schedule === 'Custom';
+            const displaySchedule = editingTask ? (editingTask.schedule || '').replace('_Expired', '') : defaultSchedule;
+            return `<div class="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center sm:p-4">
+                <div class="bg-white dark:bg-gray-900 w-full sm:max-w-lg rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[90vh]">
+                    <div class="flex justify-between p-4 border-b border-gray-100">
+                        <button onclick="window.closeTaskModal()" class="p-2 text-gray-500"><i data-lucide="x" class="w-6 h-6"></i></button>
+                        <h3 class="font-bold text-lg">${editingTask ? '編集' : '新規タスク'}</h3>
+                        <button onclick="document.getElementById('taskFormSubmitBtn').click()" class="p-2 text-blue-500"><i data-lucide="check" class="w-6 h-6"></i></button>
                     </div>
-                </div>
-            `;
-        }
-
-        function renderImageViewer() {
-            return `
-                <div class="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center p-4" onclick="window.closeImageViewer()">
-                    <img src="${viewingImage}" class="max-w-full max-h-full object-contain rounded-lg shadow-2xl" onclick="event.stopPropagation()">
-                    <button onclick="window.closeImageViewer()" class="absolute top-4 right-4 text-white hover:text-gray-300 p-2"><i data-lucide="x" class="w-8 h-8"></i></button>
-                </div>
-            `;
-        }
-
-        function renderAiConfirmModal() {
-            const isLearned = pendingAiTask.aiResult.isLearned;
-            return `
-                <div class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-                    <div class="bg-white dark:bg-gray-900 w-full max-w-sm rounded-2xl p-6 shadow-2xl space-y-4">
-                        <h3 class="font-bold text-lg text-gray-900 dark:text-white">${isLearned ? '✨ 過去の履歴から予測' : 'AI自動カテゴライズ'}</h3>
-                        <p class="text-sm text-gray-600 dark:text-gray-300">以下のカテゴリに分類されました。よろしいですか？</p>
-                        <div class="bg-gray-50 dark:bg-gray-800 p-4 rounded-xl flex items-center gap-3 border border-gray-100 dark:border-gray-700">
-                            <div class="w-10 h-10 rounded-full bg-blue-500 flex items-center justify-center text-white">${renderIcon(pendingAiTask.aiResult.icon)}</div>
-                            <div>
-                                <p class="text-xs text-gray-400 font-semibold">推論されたカテゴリ</p>
-                                <p class="font-bold text-lg text-gray-900 dark:text-white">${escapeHtml(pendingAiTask.aiResult.category)}</p>
-                            </div>
-                        </div>
-                        <div class="flex gap-2 pt-2">
-                            <button onclick="window.openSelectCategoryModal()" class="flex-1 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-semibold p-3 rounded-xl transition">修正する</button>
-                            <button onclick="window.confirmAiTask(true)" class="flex-1 bg-blue-500 hover:bg-blue-600 text-white font-semibold p-3 rounded-xl transition shadow-md">確定する</button>
-                        </div>
-                    </div>
-                </div>
-            `;
+                    <form id="taskForm" onsubmit="window.handleTaskSubmit(event)" class="flex-1 overflow-y-auto p-6 space-y-5">
+                        <button type="submit" id="taskFormSubmitBtn" class="hidden"></button>
+                        <input type="text" id="taskTitle" required value="${editingTask ? escapeHtml(editingTask.title) : ''}" placeholder="タスクを入力" class="w-full bg-transparent border-b-2 p-2 outline-none text-xl font-bold">
+                        <select id="taskCategory" class="w-full bg-gray-50 border p-3 rounded-xl">
+                            <option value="">自動分類 (AI)</option>
+                            ${categories.map(c => `<option value="${escapeHtml(c.name)}" ${editingTask && editingTask.category === c.name ? 'selected' : (defaultCategory===c.name?'selected':'')}>${c.name}</option>`).join('')}
+                        </select>
+                        <select id="taskSchedule" class="w-full bg-gray-50 border p-3 rounded-xl">
+                            <option value="">期日なし</option>
+                            <option value="Today" ${displaySchedule === 'Today' ? 'selected' : ''}>Today</option>
+                            <option value="Week" ${displaySchedule === 'Week' ? 'selected' : ''}>Week</option>
+                            <option value="Month" ${displaySchedule === 'Month' ? 'selected' : ''}>Month</option>
+                            <option value="Daily" ${displaySchedule === 'Daily' ? 'selected' : ''}>Daily</option>
+                            <option value="Weekly" ${displaySchedule === 'Weekly' ? 'selected' : ''}>Weekly</option>
+                            <option value="Monthly" ${displaySchedule === 'Monthly' ? 'selected' : ''}>Monthly</option>
+                        </select>
+                        <textarea id="taskMemo" rows="3" oninput="tempMemo=this.value" placeholder="メモ..." class="w-full bg-gray-50 border p-3 rounded-xl">${escapeHtml(tempMemo)}</textarea>
+                    </form>
+                </div></div>`;
         }
 
         function renderSelectCategoryModal() {
-            return `
-                <div class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-                    <div class="bg-white dark:bg-gray-900 w-full max-w-sm rounded-2xl p-6 shadow-2xl flex flex-col max-h-[80vh]">
-                        <h3 class="font-bold text-lg text-gray-900 dark:text-white mb-4">カテゴリを選択</h3>
-                        <div class="flex-1 overflow-y-auto space-y-2">
-                            ${categories.map(c => `
-                                <div onclick="window.selectAiCategory('${escapeHtml(c.name)}')" class="flex items-center gap-3 p-3 rounded-xl hover:bg-blue-50 dark:hover:bg-gray-800 cursor-pointer transition border border-gray-100 dark:border-gray-800">
-                                    <div class="w-8 h-8 rounded-full ${escapeHtml(c.color)} flex items-center justify-center text-white">${renderIcon(c.icon)}</div>
-                                    <span class="font-semibold text-gray-800 dark:text-gray-200">${escapeHtml(c.name)}</span>
-                                </div>
-                            `).join('')}
-                        </div>
-                        <button onclick="window.closeSelectCategoryModal()" class="mt-4 w-full bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 text-gray-800 dark:text-gray-200 font-bold p-3 rounded-xl transition">キャンセル</button>
+            return `<div class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+                <div class="bg-white dark:bg-gray-900 w-full max-w-sm rounded-2xl p-6 shadow-2xl">
+                    <h3 class="font-bold text-lg mb-4">カテゴリを選択</h3>
+                    <div class="space-y-2 max-h-[50vh] overflow-y-auto">
+                        ${categories.map(c => `<div onclick="window.selectAiCategory('${escapeHtml(c.name)}')" class="p-3 bg-gray-50 hover:bg-gray-100 rounded-xl cursor-pointer font-bold">${escapeHtml(c.name)}</div>`).join('')}
                     </div>
-                </div>
-            `;
+                    <button onclick="window.closeSelectCategoryModal()" class="mt-4 w-full bg-gray-200 font-bold p-3 rounded-xl">キャンセル</button>
+                </div></div>`;
         }
 
         window.navigate = (view) => { currentView = view; if (view === 'home') isListEditMode = false; render(); };
-        window.toggleListEditMode = () => { isListEditMode = !isListEditMode; render(); };
-        window.selectCategory = (catName) => { 
-            selectedCategory = catName; selectedFilter = null; currentView = 'list'; 
-            localFilterLocation = 'all'; localFilterPriority = 'all'; localFilterSchedule = 'all';
-            render(); 
-        };
-        window.selectFilter = (filterName) => { 
-            selectedFilter = filterName; selectedCategory = null; currentView = 'list'; 
-            localFilterLocation = 'all'; localFilterPriority = 'all'; localFilterCategory = 'all';
-            render(); 
-        };
-        window.openSettings = () => { currentView = 'settings'; selectedCategory = null; selectedFilter = null; render(); };
         window.toggleDarkMode = () => { isDarkMode = !isDarkMode; safeStorage.setItem('smart_theme', isDarkMode ? 'dark' : 'light'); render(); };
-        window.toggleSearch = () => { isSearchOpen = !isSearchOpen; if (!isSearchOpen) searchQuery = ''; render(); };
-        window.updateSearchQuery = (val) => { searchQuery = val; render(); };
+        window.selectFilter = (f) => { selectedFilter = f; selectedCategory = null; currentView = 'list'; render(); };
+        window.selectCategory = (c) => { selectedCategory = c; selectedFilter = null; currentView = 'list'; render(); };
+        window.openSettings = () => { currentView = 'settings'; render(); };
         
-        window.updateLocalFilters = () => {
-            localFilterLocation = document.getElementById('localFilterLocation')?.value || 'all';
-            localFilterPriority = document.getElementById('localFilterPriority')?.value || 'all';
-            localFilterCategory = document.getElementById('localFilterCategory')?.value || 'all';
-            localFilterSchedule = document.getElementById('localFilterSchedule')?.value || 'all';
-            render();
-        };
-        
-        window.updateCategoryForm = (key, val) => { categoryFormState[key] = val; render(); };
-        window.updateCategoryName = (val) => { categoryFormState.name = val; };
-        
-        window.openCustomModal = (type, data = null) => { 
-            customModal = { isOpen: true, type, data }; 
-            if (type === 'addList') { categoryFormState = { name: '', color: 'bg-blue-500', icon: 'list' }; }
-            if (type === 'editList') { 
-                const cat = categories.find(c => c.id === data.id);
-                if (cat) categoryFormState = { name: cat.name, color: cat.color || 'bg-blue-500', icon: cat.icon || 'list' };
-            }
-            render(); 
-        };
-        window.closeCustomModal = () => { customModal = { isOpen: false, type: '', data: null }; render(); };
-
-        window.handleModalSubmit = async () => {
-            const { type, data } = customModal;
-            if (type === 'addList') {
-                if (categoryFormState.name.trim()) {
-                    const newCat = { id: generateId(), name: categoryFormState.name.trim(), icon: categoryFormState.icon, color: categoryFormState.color };
-                    categories.push(newCat);
-                    saveCategoryToDB(newCat);
-                    window.closeCustomModal();
-                }
-            } else if (type === 'editList') {
-                if (categoryFormState.name.trim()) {
-                    const cat = categories.find(c => c.id === data.id);
-                    if (cat) {
-                        const oldName = cat.name;
-                        cat.name = categoryFormState.name.trim(); cat.color = categoryFormState.color; cat.icon = categoryFormState.icon;
-                        tasks.forEach(t => { 
-                            if (t.category === oldName) {
-                                t.category = cat.name;
-                                saveTaskToDB(t);
-                            }
-                        });
-                        if (selectedCategory === oldName) selectedCategory = cat.name;
-                        saveCategoryToDB(cat);
-                        window.closeCustomModal();
-                    }
-                }
-            } else if (type === 'deleteList') {
-                if (selectedCategory === data.name) { selectedCategory = null; selectedFilter = 'Today'; }
-                categories = categories.filter(c => c.id !== data.id);
-                deleteCategoryFromDB(data.id);
-                tasks.forEach(t => { 
-                    if (t.category === data.name) {
-                        t.category = ''; 
-                        saveTaskToDB(t);
-                    }
-                });
-                window.closeCustomModal();
-            } else if (type === 'deleteTask') {
-                tasks = tasks.filter(t => t.id !== data.id);
-                deleteTaskFromDB(data.id);
-                window.closeCustomModal();
-            }
-        };
-
-        window.openSelectCategoryModal = () => { isSelectCategoryModalOpen = true; render(); };
-        window.closeSelectCategoryModal = () => { 
-            isSelectCategoryModalOpen = false; 
-            if (pendingAiTask) {
-                const draft = pendingAiTask.taskData;
-                pendingAiTask = null;
-                window.openTaskModalWithDraft(draft);
-                return;
-            }
-            render(); 
-        };
-        window.selectAiCategory = (catName) => {
-            if (pendingAiTask) {
-                pendingAiTask.taskData.category = catName;
-                window.insertTaskAtProperPosition(pendingAiTask.taskData);
-                saveTaskToDB(pendingAiTask.taskData);
-                pendingAiTask = null; isSelectCategoryModalOpen = false; render();
-            }
-        };
-
-        window.updateTempMemo = (val) => { tempMemo = val; };
-        
-        window.toggleScheduleDetails = () => {
-            const schedule = document.getElementById('taskSchedule').value;
-            const customContainer = document.getElementById('customDateContainer');
-            const recurringContainer = document.getElementById('recurringDetailContainer');
-            const recurringSelect = document.getElementById('taskRecurringDetail');
-
-            if(customContainer && recurringContainer && recurringSelect) {
-                customContainer.classList.add('hidden');
-                recurringContainer.classList.add('hidden');
-
-                const currentTask = editingTask || taskFormDraft;
-                if (schedule === 'Custom') customContainer.classList.remove('hidden');
-                else if (schedule === 'Weekly') {
-                    recurringContainer.classList.remove('hidden');
-                    document.getElementById('recurringDetailLabel').textContent = '曜日を選択';
-                    recurringSelect.innerHTML = `<option value="">指定なし</option><option value="0">日曜日</option><option value="1">月曜日</option><option value="2">火曜日</option><option value="3">水曜日</option><option value="4">木曜日</option><option value="5">金曜日</option><option value="6">土曜日</option>`;
-                    recurringSelect.value = (currentTask && currentTask.recurringDetail !== undefined) ? currentTask.recurringDetail : '';
-                } else if (schedule === 'Monthly') {
-                    recurringContainer.classList.remove('hidden');
-                    document.getElementById('recurringDetailLabel').textContent = '日付を選択';
-                    let opts = `<option value="">指定なし</option>`; for (let i = 1; i <= 31; i++) opts += `<option value="${i}">${i}日</option>`; opts += `<option value="last">月末</option>`;
-                    recurringSelect.innerHTML = opts;
-                    recurringSelect.value = (currentTask && currentTask.recurringDetail !== undefined) ? currentTask.recurringDetail : '';
-                }
-            }
-        };
-
-        window.refreshSubtasksDOM = () => {
-            const container = document.getElementById('subtasksContainer');
-            if (container) {
-                container.innerHTML = taskFormSubtasks.map((st, i) => `
-                    <div class="flex items-center gap-2 bg-gray-50 dark:bg-gray-800 p-2 rounded-lg border border-gray-200 dark:border-gray-700">
-                        <input type="text" value="${escapeHtml(st.title)}" oninput="window.updateSubtaskTitle(${i}, this.value)" class="flex-1 bg-transparent outline-none text-sm text-gray-900 dark:text-white">
-                        <button type="button" onclick="window.removeSubtask(${i})" class="p-1 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded"><i data-lucide="x" class="w-4 h-4"></i></button>
-                    </div>
-                `).join('');
-                if (typeof lucide !== 'undefined') lucide.createIcons({root: container});
-            }
-        };
-
-        window.addSubtask = () => {
-            const input = document.getElementById('newSubtaskInput');
-            const val = input.value.trim();
-            if (val) {
-                taskFormSubtasks.push({ title: val, completed: false });
-                input.value = '';
-                window.refreshSubtasksDOM();
-            }
-        };
-        window.removeSubtask = (idx) => { taskFormSubtasks.splice(idx, 1); window.refreshSubtasksDOM(); };
-        window.updateSubtaskTitle = (idx, val) => { taskFormSubtasks[idx].title = val; };
-        
-        window.toggleListSubtask = (taskId, idx) => {
-            const t = tasks.find(x => x.id === taskId);
-            if (t && t.subtasks && t.subtasks[idx]) { 
-                t.subtasks[idx].completed = !t.subtasks[idx].completed; 
-                saveTaskToDB(t); 
-            }
-        };
-
-        window.refreshAttachmentsDOM = () => {
-            const container = document.getElementById('attachmentsContainer');
-            if (container) {
-                container.innerHTML = taskFormAttachments.map((att, i) => `
-                    <div class="relative w-20 h-20 rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 group">
-                        ${att.type.startsWith('image/') 
-                            ? `<img src="${att.data}" class="w-full h-full object-cover cursor-zoom-in" onclick="window.openImageViewer('${att.data}')">` 
-                            : `<div class="w-full h-full bg-gray-100 flex flex-col items-center justify-center text-xs text-gray-500 font-bold"><i data-lucide="file-text" class="w-6 h-6 mb-1"></i>PDF</div>`
-                        }
-                        <button type="button" onclick="window.removeAttachment(${i})" class="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition z-10"><i data-lucide="x" class="w-3 h-3"></i></button>
-                    </div>
-                `).join('');
-                if (typeof lucide !== 'undefined') lucide.createIcons({root: container});
-            }
-        };
-
-        window.handleFileUpload = (e) => {
-            const files = e.target.files;
-            for (let file of files) {
-                if (file.size > 2 * 1024 * 1024) { alert('ファイルサイズは2MB以下にしてください。'); continue; }
-                const reader = new FileReader();
-                reader.onload = (event) => {
-                    taskFormAttachments.push({ name: file.name, type: file.type, data: event.target.result });
-                    window.refreshAttachmentsDOM();
-                };
-                reader.readAsDataURL(file);
-            }
-        };
-        window.removeAttachment = (idx) => { taskFormAttachments.splice(idx, 1); window.refreshAttachmentsDOM(); };
-
-        window.openImageViewer = (src) => { viewingImage = src; render(); };
-        window.closeImageViewer = () => { viewingImage = null; render(); };
-
-        window.openTaskModal = () => { 
-            editingTask = null; 
-            taskFormDraft = null;
-            tempMemo = ''; taskFormSubtasks = []; taskFormAttachments = []; 
-            defaultCategory = selectedCategory || '';
-            defaultSchedule = '';
-            if (!selectedCategory && selectedFilter && ['Today', 'Week', 'Month', 'Daily', 'Weekly', 'Monthly'].includes(selectedFilter)) {
-                defaultSchedule = selectedFilter;
-            }
-            isTaskModalOpen = true; 
-            render(); 
-            setTimeout(window.toggleScheduleDetails, 50); 
-        };
-        window.openTaskModalWithDraft = (draft) => {
-            editingTask = null;
-            taskFormDraft = draft;
-            tempMemo = draft.memo || '';
-            taskFormSubtasks = draft.subtasks ? JSON.parse(JSON.stringify(draft.subtasks)) : [];
-            taskFormAttachments = draft.attachments ? [...draft.attachments] : [];
-            defaultCategory = draft.category || '';
-            defaultSchedule = draft.schedule || '';
-            isTaskModalOpen = true;
-            render();
-            setTimeout(window.toggleScheduleDetails, 50);
-        };
-        window.closeTaskModal = () => { isTaskModalOpen = false; editingTask = null; taskFormDraft = null; render(); };
-        window.editTask = (id) => { 
-            editingTask = tasks.find(t => t.id === id); 
-            taskFormDraft = null;
-            tempMemo = editingTask.memo || ''; taskFormSubtasks = editingTask.subtasks ? JSON.parse(JSON.stringify(editingTask.subtasks)) : []; taskFormAttachments = editingTask.attachments ? [...editingTask.attachments] : [];
-            isTaskModalOpen = true; render(); setTimeout(window.toggleScheduleDetails, 50); 
-        };
+        window.openTaskModal = () => { editingTask = null; tempMemo = ''; defaultCategory = selectedCategory||''; defaultSchedule=''; isTaskModalOpen = true; render(); };
+        window.closeTaskModal = () => { isTaskModalOpen = false; editingTask = null; render(); };
+        window.editTask = (id) => { editingTask = tasks.find(t => t.id === id); tempMemo = editingTask.memo || ''; isTaskModalOpen = true; render(); };
         
         window.toggleTaskComplete = (id) => {
             const task = tasks.find(t => t.id === id);
             if (task) {
                 task.completed = !task.completed;
-                if (task.completed) {
-                    task.completedAt = Date.now();
-                    
-                    const schedBase = task.schedule ? task.schedule.replace('_Completed', '').replace('_Expired', '') : '';
-                    if (['Daily', 'Weekly', 'Monthly'].includes(schedBase) && !(task.schedule || '').includes('_Completed')) {
-                        const nextDue = getNextDueDate(schedBase, task.recurringDetail, task.dueDate || getTodayStr());
-                        const newTask = { ...task, id: generateId(), dueDate: nextDue, completed: false, createdAt: Date.now() };
-                        delete newTask.completedAt;
-                        
-                        task.schedule = schedBase + '_Completed';
-                        
-                        tasks.push(newTask);
-                        saveTaskToDB(newTask);
-                    }
-                } else {
-                    delete task.completedAt;
-                    // 再度未完了に戻した時、_Completed を外す処理を入れるかは運用次第だが、単純に完了取り消しとする
-                }
-                window.insertTaskAtProperPosition(task);
-                saveTaskToDB(task);
-                render();
+                if (task.completed) task.completedAt = Date.now();
+                else delete task.completedAt;
+                saveTaskToFirestore(task);
             }
         };
 
-        window.handleTaskSubmit = async (e) => {
+        window.handleTaskSubmit = (e) => {
             e.preventDefault();
             const title = document.getElementById('taskTitle').value;
             const category = document.getElementById('taskCategory').value;
-            const priority = document.getElementById('taskPriority').value;
-            const location = document.getElementById('taskLocation').value;
             const schedule = document.getElementById('taskSchedule').value;
-            const customDate = document.getElementById('taskCustomDate').value;
-            const recurringDetail = document.getElementById('taskRecurringDetail')?.value || '';
-            const url = document.getElementById('taskUrl').value;
 
             let computedDueDate = '';
             if (schedule === 'Today') computedDueDate = getTodayStr();
             else if (schedule === 'Week') computedDueDate = getWeekendStr();
             else if (schedule === 'Month') computedDueDate = getMonthEndStr();
-            else if (['Daily', 'Weekly', 'Monthly'].includes(schedule)) computedDueDate = getInitialDueDate(schedule, recurringDetail);
-            else if (schedule === 'Custom') computedDueDate = customDate;
+            else if (['Daily', 'Weekly', 'Monthly'].includes(schedule)) computedDueDate = getInitialDueDate(schedule, '');
 
-            const baseTaskData = {
-                title, url, priority, location, schedule, recurringDetail, dueDate: computedDueDate, 
-                memo: tempMemo, subtasks: taskFormSubtasks, attachments: taskFormAttachments
-            };
+            const baseTaskData = { title, schedule, dueDate: computedDueDate, memo: tempMemo, completed: false, createdAt: Date.now() };
 
             if (editingTask) {
                 Object.assign(editingTask, baseTaskData);
                 editingTask.category = category || editingTask.category;
-                saveTaskToDB(editingTask);
-                taskFormDraft = null;
+                saveTaskToFirestore(editingTask);
                 window.closeTaskModal();
-            } else if (!category) {
-                const aiResult = await aiCategorizeAndIcon(title);
-                pendingAiTask = {
-                    taskData: { id: generateId(), ...baseTaskData, completed: false, createdAt: Date.now() },
-                    aiResult
-                };
-                isTaskModalOpen = false; render();
             } else {
-                const newTask = { id: generateId(), ...baseTaskData, category, completed: false, createdAt: Date.now() };
-                taskFormDraft = null;
-                window.insertTaskAtProperPosition(newTask);
-                saveTaskToDB(newTask);
-                window.closeTaskModal();
+                if (!category) {
+                    pendingAiTask = { taskData: { id: generateId(), ...baseTaskData, category: categories[0]?.name || '未分類' }};
+                    isTaskModalOpen = false;
+                    isSelectCategoryModalOpen = true;
+                    render();
+                } else {
+                    saveTaskToFirestore({ id: generateId(), ...baseTaskData, category });
+                    window.closeTaskModal();
+                }
             }
         };
 
-        window.confirmAiTask = (accepted) => {
-            if (accepted && pendingAiTask) {
-                let catName = pendingAiTask.aiResult.category;
-                if (!categories.some(c => c.name === catName)) {
-                    const newCat = { id: generateId(), name: catName, icon: pendingAiTask.aiResult.icon, color: 'bg-blue-500' };
-                    categories.push(newCat);
-                    saveCategoryToDB(newCat);
-                }
+        window.openCustomModal = (type, data) => { customModal = { isOpen: true, type, data }; render(); };
+        window.closeCustomModal = () => { customModal = { isOpen: false, type: '', data: null }; render(); };
+        
+        window.handleModalSubmit = () => {
+            const { type, data } = customModal;
+            if (type === 'addList') {
+                if (categoryFormState.name.trim()) saveCategoryToFirestore({ id: generateId(), name: categoryFormState.name.trim(), color: 'bg-blue-500', icon: 'list' });
+            } else if (type === 'deleteList') {
+                deleteCategoryFromFirestore(data.id);
+            } else if (type === 'deleteTask') {
+                deleteTaskFromFirestore(data.id);
+            }
+            window.closeCustomModal();
+        };
+
+        window.selectAiCategory = (catName) => {
+            if (pendingAiTask) {
                 pendingAiTask.taskData.category = catName;
-                window.insertTaskAtProperPosition(pendingAiTask.taskData);
-                saveTaskToDB(pendingAiTask.taskData);
-                pendingAiTask = null; render();
+                saveTaskToFirestore(pendingAiTask.taskData);
+                pendingAiTask = null; isSelectCategoryModalOpen = false; render();
             }
         };
-
-        window.loginWithGoogle = () => {
-            const provider = new GoogleAuthProvider();
-            signInWithPopup(auth, provider).catch((error) => {
-                alert('ログインに失敗しました。\n' + error.message);
-                console.error(error);
-            });
-        };
-
-        window.logout = () => {
-            signOut(auth).catch((error) => console.error(error));
-        };
-
-        function subscribeData(uid) {
-            if (unsubscribeTasks) unsubscribeTasks();
-            if (unsubscribeCategories) unsubscribeCategories();
-
-            unsubscribeTasks = onSnapshot(collection(db, 'users', uid, 'tasks'), (snapshot) => {
-                let newTasks = [];
-                snapshot.forEach(doc => newTasks.push(doc.data()));
-                tasks = newTasks;
-                saveTasksToLocal();
-                
-                // Firestoreからの読み込み後も期限チェックを行う
-                if(!processRecurringTasks()) {
-                    render(); // 更新がなければ単純にrender
-                }
-            }, (error) => console.error("Tasks sync error:", error));
-
-            unsubscribeCategories = onSnapshot(collection(db, 'users', uid, 'categories'), (snapshot) => {
-                let newCats = [];
-                snapshot.forEach(doc => newCats.push(doc.data()));
-                if(newCats.length > 0) {
-                    categories = newCats;
-                    saveCategoriesToLocal();
-                }
-                render();
-            }, (error) => console.error("Categories sync error:", error));
-        }
-
-        onAuthStateChanged(auth, (user) => {
-            currentUser = user;
-            if (user) {
-                subscribeData(user.uid);
-            } else {
-                if (unsubscribeTasks) unsubscribeTasks();
-                if (unsubscribeCategories) unsubscribeCategories();
-                // 匿名ログインにフォールバック（外部アクセス時用）
-                signInAnonymously(auth).catch(console.error);
+        // キャンセル時はタスク入力画面に戻る
+        window.closeSelectCategoryModal = () => {
+            isSelectCategoryModalOpen = false;
+            if (pendingAiTask) {
+                editingTask = pendingAiTask.taskData;
+                isTaskModalOpen = true;
+                pendingAiTask = null;
             }
-        });
-
-        // 初回ロード時の期限チェック・描画
-        if(!processRecurringTasks()) {
             render();
-        }
+        };
+
+        render();
 
     </script>
 </body>
