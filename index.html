@@ -42,12 +42,10 @@
     </div>
 
     <script type="module">
-        // Firebase のインポート
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
         import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
         import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
 
-        // Firebase 設定
         const firebaseConfig = {
             apiKey: "AIzaSyDrP9nAgF-J9ISkPTr0LAC_EeDmDpEWPNw",
             authDomain: "reminder-5f9ca.firebaseapp.com",
@@ -65,7 +63,6 @@
         let unsubscribeTasks = null;
         let unsubscribeCats = null;
 
-        // グローバルエラー検知
         window.addEventListener('error', function(event) {
             const appEl = document.getElementById('app');
             if (appEl) {
@@ -82,8 +79,16 @@
             setItem(key, value) { try { localStorage.setItem(key, value); } catch (e) { } }
         };
 
-        const availableIcons = ['list', 'home', 'heart', 'gem', 'lightbulb', 'gift', 'shopping-cart', 'briefcase', 'activity', 'star', 'bell'];
-        const availableColors = ['bg-red-500', 'bg-orange-500', 'bg-amber-500', 'bg-green-500', 'bg-blue-500', 'bg-indigo-500', 'bg-purple-500', 'bg-gray-500', 'bg-black'];
+        const availableIcons = [
+            'list', 'home', 'heart', 'gem', 'lightbulb', 'gift', 'shopping-cart',
+            'briefcase', 'activity', 'star', 'bell', 'coffee', 'book', 'utensils',
+            'car', 'dumbbell', 'trophy', 'plane', 'credit-card', 'smile'
+        ];
+        const availableColors = [
+            'bg-red-500', 'bg-orange-500', 'bg-amber-500', 'bg-green-500', 'bg-emerald-500',
+            'bg-teal-500', 'bg-blue-500', 'bg-indigo-500', 'bg-purple-500', 'bg-pink-500',
+            'bg-gray-500', 'bg-slate-700', 'bg-black'
+        ];
 
         function renderIcon(iconName) {
             const name = iconName || 'list';
@@ -142,7 +147,6 @@
             return formatDate(end);
         }
 
-        // 次の期日を計算する関数 (無限ループ対策済)
         function getNextDueDate(schedule, currentDueDate, detail) {
             const d = new Date();
             const todayStr = formatDate(d);
@@ -157,13 +161,18 @@
                 while (nextD < d && formatDate(nextD) !== todayStr) { nextD.setDate(nextD.getDate() + 7); }
             } else if (schedule === 'Monthly') {
                 const isLastDay = detail === 'last';
-                const targetDay = isLastDay ? 0 : (parseInt(detail) || 1);
-                if (isLastDay) { nextD = new Date(nextD.getFullYear(), nextD.getMonth() + 2, 0); } 
-                else { nextD.setMonth(nextD.getMonth() + 1); }
+                if (isLastDay) { 
+                    nextD = new Date(nextD.getFullYear(), nextD.getMonth() + 2, 0); 
+                } else { 
+                    nextD.setMonth(nextD.getMonth() + 1); 
+                }
                 
                 while (nextD < d && formatDate(nextD) !== todayStr) {
-                    if (isLastDay) { nextD = new Date(nextD.getFullYear(), nextD.getMonth() + 2, 0); } 
-                    else { nextD.setMonth(nextD.getMonth() + 1); }
+                    if (isLastDay) { 
+                        nextD = new Date(nextD.getFullYear(), nextD.getMonth() + 2, 0); 
+                    } else { 
+                        nextD.setMonth(nextD.getMonth() + 1); 
+                    }
                 }
             }
             return formatDate(nextD);
@@ -224,7 +233,6 @@
         function isMonthTask(t) {
             if (t.completed) return false;
             if (isTodayTask(t) || isWeekTask(t)) return false;
-            const prefix = getThisMonthPrefix();
             if (t.dueDate && t.dueDate >= getTodayStr()) return true;
             if (t.schedule === 'Month' || t.schedule === 'Monthly') return true;
             return false;
@@ -235,7 +243,6 @@
             return String(str).replace(/[&<>'"]/g, tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag));
         }
 
-        // Firestore 同期設定とエラーアラート追加
         function setupRealtimeSync(uid) {
             if(unsubscribeTasks) unsubscribeTasks();
             if(unsubscribeCats) unsubscribeCats();
@@ -257,10 +264,21 @@
             const qCats = query(collection(db, `users/${uid}/categories`));
             unsubscribeCats = onSnapshot(qCats, (snapshot) => {
                 categories = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+                // カテゴリが0件の場合はデフォルトを自動セット
+                if (categories.length === 0) {
+                    const defaultCats = [
+                        { id: generateId(), name: 'To Do', icon: 'list', color: 'bg-blue-500' },
+                        { id: generateId(), name: '買い物', icon: 'shopping-cart', color: 'bg-orange-500' },
+                        { id: generateId(), name: '仕事', icon: 'briefcase', color: 'bg-indigo-500' },
+                        { id: generateId(), name: 'アイデア', icon: 'lightbulb', color: 'bg-amber-500' }
+                    ];
+                    defaultCats.forEach(cat => saveCategoryToFirestore(cat));
+                    categories = defaultCats;
+                }
                 render();
             }, (error) => {
                 console.error("Firestore Cats Error:", error);
-                // 片方でアラートを出せば十分なのでここではコンソールのみ
             });
         }
 
@@ -327,7 +345,6 @@
                 await signInWithPopup(auth, provider);
             } catch (error) {
                 console.error("Login Error:", error);
-                // ★モバイル・他端末でエラー原因が分かるようにアラートを表示
                 let errorMessage = "ログインに失敗しました。";
                 if (error.code === 'auth/popup-blocked') {
                     errorMessage = "ブラウザのポップアップブロックが原因で画面が開けません。設定で許可してください。";
@@ -335,6 +352,8 @@
                     errorMessage = "このドメイン(URL)はFirebaseで許可されていません。Firebase Consoleの「承認済みドメイン」に追加してください。";
                 } else if (error.code === 'auth/popup-closed-by-user') {
                     errorMessage = "ログイン処理がキャンセルされました。";
+                } else if (error.code === 'auth/cancelled-popup-request') {
+                    errorMessage = "ログイン処理が重複してリクエストされました。画面を再読み込み後、一度だけクリックしてください。";
                 }
                 alert(errorMessage + "\n(エラーコード: " + error.code + ")");
             }
@@ -371,6 +390,17 @@
                 Executed: tasks.filter(t => t.completed).length
             };
         }
+
+        window.toggleListEditMode = () => {
+            isListEditMode = !isListEditMode;
+            render();
+        };
+
+        window.navigate = (view) => { 
+            currentView = view; 
+            if (view === 'home') isListEditMode = false; 
+            render(); 
+        };
 
         window.insertTaskAtProperPosition = (task) => {
             saveTaskToFirestore(task);
@@ -454,7 +484,7 @@
                         <i data-lucide="cloud" class="w-10 h-10"></i>
                     </div>
                     <h3 class="font-bold text-lg text-gray-900 dark:text-white">クラウド同期</h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">Googleアカウントでログインすると、<br>複数端末でタスクをリアルタイム同期できます。</p>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">Googleアカウントでログインすると、<br>他端末とリアルタイムに同期できます。</p>
                     <button onclick="window.loginWithGoogle()" class="mt-4 bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-xl flex items-center gap-2 transition shadow-md">
                         <i data-lucide="log-in" class="w-5 h-5"></i> Googleでログイン
                     </button>
@@ -508,12 +538,12 @@
 
                 <div class="mt-8 mb-2 flex items-center justify-between">
                     <h2 class="text-lg font-bold text-gray-800 dark:text-gray-200">マイリスト</h2>
-                    <button onclick="window.toggleListEditMode()" class="text-sm font-semibold flex items-center gap-1 ${isListEditMode ? 'text-blue-500' : 'text-gray-500 hover:bg-gray-200'} px-3 py-1.5 rounded-full transition">
+                    <button onclick="window.toggleListEditMode()" class="text-sm font-semibold flex items-center gap-1 ${isListEditMode ? 'text-blue-500 bg-blue-50 dark:bg-blue-900/40' : 'text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800'} px-3 py-1.5 rounded-full transition cursor-pointer">
                         ${isListEditMode ? '完了' : '編集'}
                     </button>
                 </div>
 
-                <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm overflow-hidden mb-8">
+                <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm overflow-hidden mb-8 flex flex-col">
                     <div id="categoryListContainer" class="divide-y divide-gray-100 dark:divide-gray-700">
                         ${categories.map(cat => {
                             const count = tasks.filter(t => t.category === cat.name && (!t.completed || isActiveCompletedTask(t))).length;
@@ -533,7 +563,14 @@
                             `;
                         }).join('')}
                     </div>
-                    ${isListEditMode ? `<div onclick="window.openCustomModal('addList')" class="flex items-center gap-3 p-4 hover:bg-gray-50 cursor-pointer text-blue-500 font-medium border-t border-gray-100 dark:border-gray-700"><i data-lucide="plus" class="w-5 h-5"></i>新しいリストを作成</div>` : ''}
+                    ${isListEditMode ? `
+                        <div onclick="window.openCustomModal('addList')" class="flex items-center gap-3 p-4 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer text-blue-500 font-medium border-t border-gray-100 dark:border-gray-700 transition">
+                            <div class="w-8 h-8 rounded-full bg-blue-50 dark:bg-blue-900/30 flex items-center justify-center border border-dashed border-blue-300">
+                                <i data-lucide="plus" class="w-5 h-5"></i>
+                            </div>
+                            新しいリストを作成
+                        </div>
+                    ` : ''}
                 </div>
             `;
         }
@@ -591,7 +628,7 @@
                             <input type="checkbox" ${isComp ? 'checked' : ''} onchange="window.toggleTaskComplete('${task.id}')" class="mt-1 w-6 h-6 rounded-full border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer">
                             <div class="flex-1 min-w-0">
                                 <p class="font-medium text-base ${isComp ? 'line-through text-gray-400' : ''}">${escapeHtml(task.title)}</p>
-                                ${task.memo ? `<div class="mt-2 text-sm text-gray-600 bg-gray-50 dark:bg-gray-900/50 p-3 rounded-xl">${escapeHtml(task.memo).replace(/\n/g, '<br>')}</div>` : ''}
+                                ${task.memo ? `<div class="mt-2 text-sm text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-900/50 p-3 rounded-xl">${escapeHtml(task.memo).replace(/\n/g, '<br>')}</div>` : ''}
                                 <div class="flex flex-wrap items-center gap-2 mt-3 text-xs text-gray-500">
                                     ${task.category ? `<span class="bg-gray-100 dark:bg-gray-700 px-2.5 py-1 rounded-md">${escapeHtml(task.category)}</span>` : ''}
                                     ${displaySch ? `<span class="bg-blue-50 text-blue-600 dark:bg-blue-900/30 px-2.5 py-1 rounded-md">${displaySch}</span>` : ''}
@@ -617,8 +654,8 @@
                             <div class="flex items-center gap-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
                                 <img src="${currentUser.photoURL || ''}" class="w-12 h-12 rounded-full bg-blue-200">
                                 <div>
-                                    <p class="font-bold text-gray-900 dark:text-white">${escapeHtml(currentUser.displayName)}</p>
-                                    <p class="text-sm text-gray-500">${escapeHtml(currentUser.email)}</p>
+                                    <p class="font-bold text-gray-900 dark:text-white">${escapeHtml(currentUser.displayName || 'ユーザー')}</p>
+                                    <p class="text-sm text-gray-500">${escapeHtml(currentUser.email || '')}</p>
                                 </div>
                             </div>
                             <button onclick="window.logout()" class="w-full bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-white font-bold p-3 rounded-xl transition">ログアウト</button>
@@ -633,35 +670,62 @@
             `;
         }
 
-        // モーダル等
         function renderCustomModal() {
             if (customModal.type === 'addList' || customModal.type === 'editList') return renderCategoryModal();
             let title = '', content = '', actionBtn = '';
             if (customModal.type === 'deleteList') {
                 title = 'リストの削除';
-                content = `<p class="text-sm">リスト「${escapeHtml(customModal.data.name)}」を削除しますか？<br><span class="text-xs text-red-500">※中のタスクは消えません</span></p>`;
+                content = `<p class="text-sm text-gray-600 dark:text-gray-300">リスト「${escapeHtml(customModal.data.name)}」を削除しますか？<br><span class="text-xs text-red-500">※リスト内のタスクは消えません（カテゴリ未設定になります）</span></p>`;
                 actionBtn = `<button onclick="window.handleModalSubmit()" class="flex-1 bg-red-500 text-white font-semibold p-3 rounded-xl">削除する</button>`;
             } else if (customModal.type === 'deleteTask') {
                 title = 'タスクの削除';
-                content = `<p class="text-sm">完全に削除しますか？</p>`;
+                content = `<p class="text-sm text-gray-600 dark:text-gray-300">このタスクを完全に削除しますか？</p>`;
                 actionBtn = `<button onclick="window.handleModalSubmit()" class="flex-1 bg-red-500 text-white font-semibold p-3 rounded-xl">削除する</button>`;
             }
             return `<div class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
                 <div class="bg-white dark:bg-gray-900 w-full max-w-sm rounded-2xl p-6 shadow-2xl">
-                    <h3 class="font-bold text-lg">${title}</h3>${content}
+                    <h3 class="font-bold text-lg text-gray-900 dark:text-white">${title}</h3>
+                    ${content}
                     <div class="flex gap-2 mt-6">
-                        <button onclick="window.closeCustomModal()" class="flex-1 bg-gray-200 dark:bg-gray-700 font-semibold p-3 rounded-xl">キャンセル</button>${actionBtn}
+                        <button onclick="window.closeCustomModal()" class="flex-1 bg-gray-200 dark:bg-gray-700 font-semibold p-3 rounded-xl text-gray-800 dark:text-gray-200">キャンセル</button>
+                        ${actionBtn}
                     </div>
                 </div></div>`;
         }
 
         function renderCategoryModal() {
-            return `<div class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-                <div class="bg-white dark:bg-gray-900 w-full max-w-md rounded-2xl shadow-2xl p-6">
-                    <input type="text" value="${escapeHtml(categoryFormState.name)}" oninput="categoryFormState.name = this.value" placeholder="リスト名" class="w-full bg-transparent border-b-2 border-gray-300 p-2 mb-4 outline-none text-lg font-bold">
-                    <div class="flex gap-2 mb-4">
-                        <button onclick="window.closeCustomModal()" class="flex-1 bg-gray-100 p-3 rounded-xl">キャンセル</button>
-                        <button onclick="window.handleModalSubmit()" class="flex-1 bg-blue-500 text-white p-3 rounded-xl">保存</button>
+            return `<div class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+                <div class="bg-white dark:bg-gray-900 w-full max-w-md rounded-2xl shadow-2xl p-6 space-y-4">
+                    <div class="flex justify-center mb-2">
+                        <div class="w-14 h-14 rounded-full ${categoryFormState.color} text-white flex items-center justify-center text-xl shadow-md">
+                            ${renderIcon(categoryFormState.icon)}
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-500 mb-1">カテゴリ名</label>
+                        <input type="text" value="${escapeHtml(categoryFormState.name)}" oninput="categoryFormState.name = this.value" placeholder="リスト名" class="w-full bg-transparent border-b-2 border-gray-300 dark:border-gray-700 p-2 outline-none text-lg font-bold text-gray-900 dark:text-white">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-500 mb-2">カラー</label>
+                        <div class="flex flex-wrap gap-2">
+                            ${availableColors.map(c => `
+                                <button onclick="categoryFormState.color='${c}'; render();" class="w-7 h-7 rounded-full ${c} ${categoryFormState.color===c?'ring-2 ring-offset-2 ring-gray-400':''}"></button>
+                            `).join('')}
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-500 mb-2">アイコン</label>
+                        <div class="grid grid-cols-6 gap-2 max-h-36 overflow-y-auto">
+                            ${availableIcons.map(ic => `
+                                <button onclick="categoryFormState.icon='${ic}'; render();" class="p-2 rounded-lg ${categoryFormState.icon===ic?'bg-gray-200 dark:bg-gray-700 text-blue-500':'text-gray-500'} flex items-center justify-center">
+                                    <i data-lucide="${ic}" class="w-5 h-5"></i>
+                                </button>
+                            `).join('')}
+                        </div>
+                    </div>
+                    <div class="flex gap-2 pt-4">
+                        <button onclick="window.closeCustomModal()" class="flex-1 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 p-3 rounded-xl font-bold">キャンセル</button>
+                        <button onclick="window.handleModalSubmit()" class="flex-1 bg-blue-500 text-white p-3 rounded-xl font-bold">保存</button>
                     </div>
                 </div></div>`;
         }
@@ -669,21 +733,21 @@
         function renderTaskModal() {
             const isCustom = editingTask && editingTask.schedule === 'Custom';
             const displaySchedule = editingTask ? (editingTask.schedule || '').replace('_Expired', '') : defaultSchedule;
-            return `<div class="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center sm:p-4">
+            return `<div class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4">
                 <div class="bg-white dark:bg-gray-900 w-full sm:max-w-lg rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[90vh]">
-                    <div class="flex justify-between p-4 border-b border-gray-100">
+                    <div class="flex justify-between p-4 border-b border-gray-100 dark:border-gray-800">
                         <button onclick="window.closeTaskModal()" class="p-2 text-gray-500"><i data-lucide="x" class="w-6 h-6"></i></button>
-                        <h3 class="font-bold text-lg">${editingTask ? '編集' : '新規タスク'}</h3>
+                        <h3 class="font-bold text-lg text-gray-900 dark:text-white">${editingTask ? '編集' : '新規タスク'}</h3>
                         <button onclick="document.getElementById('taskFormSubmitBtn').click()" class="p-2 text-blue-500"><i data-lucide="check" class="w-6 h-6"></i></button>
                     </div>
                     <form id="taskForm" onsubmit="window.handleTaskSubmit(event)" class="flex-1 overflow-y-auto p-6 space-y-5">
                         <button type="submit" id="taskFormSubmitBtn" class="hidden"></button>
-                        <input type="text" id="taskTitle" required value="${editingTask ? escapeHtml(editingTask.title) : ''}" placeholder="タスクを入力" class="w-full bg-transparent border-b-2 p-2 outline-none text-xl font-bold">
-                        <select id="taskCategory" class="w-full bg-gray-50 border p-3 rounded-xl">
+                        <input type="text" id="taskTitle" required value="${editingTask ? escapeHtml(editingTask.title) : ''}" placeholder="タスクを入力" class="w-full bg-transparent border-b-2 border-gray-300 dark:border-gray-700 p-2 outline-none text-xl font-bold text-gray-900 dark:text-white">
+                        <select id="taskCategory" class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-3 rounded-xl text-gray-900 dark:text-white outline-none">
                             <option value="">自動分類 (AI)</option>
                             ${categories.map(c => `<option value="${escapeHtml(c.name)}" ${editingTask && editingTask.category === c.name ? 'selected' : (defaultCategory===c.name?'selected':'')}>${c.name}</option>`).join('')}
                         </select>
-                        <select id="taskSchedule" class="w-full bg-gray-50 border p-3 rounded-xl">
+                        <select id="taskSchedule" class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-3 rounded-xl text-gray-900 dark:text-white outline-none">
                             <option value="">期日なし</option>
                             <option value="Today" ${displaySchedule === 'Today' ? 'selected' : ''}>Today</option>
                             <option value="Week" ${displaySchedule === 'Week' ? 'selected' : ''}>Week</option>
@@ -692,23 +756,22 @@
                             <option value="Weekly" ${displaySchedule === 'Weekly' ? 'selected' : ''}>Weekly</option>
                             <option value="Monthly" ${displaySchedule === 'Monthly' ? 'selected' : ''}>Monthly</option>
                         </select>
-                        <textarea id="taskMemo" rows="3" oninput="tempMemo=this.value" placeholder="メモ..." class="w-full bg-gray-50 border p-3 rounded-xl">${escapeHtml(tempMemo)}</textarea>
+                        <textarea id="taskMemo" rows="3" oninput="tempMemo=this.value" placeholder="メモ..." class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-3 rounded-xl text-gray-900 dark:text-white outline-none resize-none">${escapeHtml(tempMemo)}</textarea>
                     </form>
                 </div></div>`;
         }
 
         function renderSelectCategoryModal() {
-            return `<div class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+            return `<div class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
                 <div class="bg-white dark:bg-gray-900 w-full max-w-sm rounded-2xl p-6 shadow-2xl">
-                    <h3 class="font-bold text-lg mb-4">カテゴリを選択</h3>
+                    <h3 class="font-bold text-lg mb-4 text-gray-900 dark:text-white">カテゴリを選択</h3>
                     <div class="space-y-2 max-h-[50vh] overflow-y-auto">
-                        ${categories.map(c => `<div onclick="window.selectAiCategory('${escapeHtml(c.name)}')" class="p-3 bg-gray-50 hover:bg-gray-100 rounded-xl cursor-pointer font-bold">${escapeHtml(c.name)}</div>`).join('')}
+                        ${categories.map(c => `<div onclick="window.selectAiCategory('${escapeHtml(c.name)}')" class="p-3 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl cursor-pointer font-bold text-gray-800 dark:text-gray-200">${escapeHtml(c.name)}</div>`).join('')}
                     </div>
-                    <button onclick="window.closeSelectCategoryModal()" class="mt-4 w-full bg-gray-200 font-bold p-3 rounded-xl">キャンセル</button>
+                    <button onclick="window.closeSelectCategoryModal()" class="mt-4 w-full bg-gray-200 dark:bg-gray-700 font-bold p-3 rounded-xl text-gray-800 dark:text-gray-200">キャンセル</button>
                 </div></div>`;
         }
 
-        window.navigate = (view) => { currentView = view; if (view === 'home') isListEditMode = false; render(); };
         window.toggleDarkMode = () => { isDarkMode = !isDarkMode; safeStorage.setItem('smart_theme', isDarkMode ? 'dark' : 'light'); render(); };
         window.selectFilter = (f) => { selectedFilter = f; selectedCategory = null; currentView = 'list'; render(); };
         window.selectCategory = (c) => { selectedCategory = c; selectedFilter = null; currentView = 'list'; render(); };
@@ -760,13 +823,41 @@
             }
         };
 
-        window.openCustomModal = (type, data) => { customModal = { isOpen: true, type, data }; render(); };
+        window.openCustomModal = (type, data) => { 
+            customModal = { isOpen: true, type, data }; 
+            if (type === 'addList') {
+                categoryFormState = { name: '', color: 'bg-blue-500', icon: 'list' };
+            } else if (type === 'editList') {
+                const cat = categories.find(c => c.id === data.id);
+                if (cat) categoryFormState = { name: cat.name, color: cat.color || 'bg-blue-500', icon: cat.icon || 'list' };
+            }
+            render(); 
+        };
         window.closeCustomModal = () => { customModal = { isOpen: false, type: '', data: null }; render(); };
         
         window.handleModalSubmit = () => {
             const { type, data } = customModal;
             if (type === 'addList') {
-                if (categoryFormState.name.trim()) saveCategoryToFirestore({ id: generateId(), name: categoryFormState.name.trim(), color: 'bg-blue-500', icon: 'list' });
+                if (categoryFormState.name.trim()) {
+                    saveCategoryToFirestore({
+                        id: generateId(),
+                        name: categoryFormState.name.trim(),
+                        color: categoryFormState.color,
+                        icon: categoryFormState.icon
+                    });
+                }
+            } else if (type === 'editList') {
+                if (categoryFormState.name.trim()) {
+                    const cat = categories.find(c => c.id === data.id);
+                    if (cat) {
+                        saveCategoryToFirestore({
+                            ...cat,
+                            name: categoryFormState.name.trim(),
+                            color: categoryFormState.color,
+                            icon: categoryFormState.icon
+                        });
+                    }
+                }
             } else if (type === 'deleteList') {
                 deleteCategoryFromFirestore(data.id);
             } else if (type === 'deleteTask') {
@@ -782,7 +873,7 @@
                 pendingAiTask = null; isSelectCategoryModalOpen = false; render();
             }
         };
-        // キャンセル時はタスク入力画面に戻る
+
         window.closeSelectCategoryModal = () => {
             isSelectCategoryModalOpen = false;
             if (pendingAiTask) {
@@ -794,7 +885,6 @@
         };
 
         render();
-
     </script>
 </body>
 </html>
