@@ -27,6 +27,9 @@
         .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
         .hide-scrollbar::-webkit-scrollbar { display: none; }
         .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .sortable-ghost { opacity: 0.35 !important; background-color: rgba(59, 130, 246, 0.08) !important; border: 2px dashed #3b82f6 !important; }
+        .sortable-chosen { box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.1) !important; }
+        .sortable-drag { opacity: 0.95 !important; transform: scale(1.02); z-index: 9999 !important; transition: none !important; cursor: grabbing !important; }
     </style>
 </head>
 <body class="bg-gray-100 text-gray-900 transition-colors duration-300 w-full h-screen overflow-hidden" id="bodyRoot">
@@ -344,6 +347,41 @@
             return newTask;
         }
 
+        // 現在日時から1か月前のタイムスタンプを算出（月末日のズレも考慮）
+        function getOneMonthAgoTimestamp() {
+            const now = new Date();
+            const currentDay = now.getDate();
+            const target = new Date(now.getTime());
+            target.setDate(1);
+            target.setMonth(target.getMonth() - 1);
+            const maxDayInTargetMonth = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+            target.setDate(Math.min(currentDay, maxDayInTargetMonth));
+            return target.getTime();
+        }
+
+        // Executed（完了済み）に移動してから1か月経過したタスクを自動的に完全削除
+        function cleanupOldExecutedTasks() {
+            const cutoff = getOneMonthAgoTimestamp();
+            const expiredIds = [];
+
+            tasks.forEach(t => {
+                if (t.completed) {
+                    const completedTime = t.completedAt || t.createdAt;
+                    if (completedTime && completedTime <= cutoff) {
+                        expiredIds.push(t.id);
+                    }
+                }
+            });
+
+            if (expiredIds.length > 0) {
+                tasks = tasks.filter(t => !expiredIds.includes(t.id));
+                saveTasksToLocal();
+                expiredIds.forEach(id => deleteTaskFromDB(id));
+                return true;
+            }
+            return false;
+        }
+
         function processRecurringTasks() {
             if (isProcessingRecurring) return false;
             isProcessingRecurring = true;
@@ -354,6 +392,11 @@
             let changed = false;
 
             try {
+                // 完了から1か月経過したタスクの自動消去を実行
+                if (cleanupOldExecutedTasks()) {
+                    changed = true;
+                }
+
                 tasks.forEach(t => {
                     if (!t.completed && t.dueDate && t.dueDate < todayStr) {
                         const schedBase = getScheduleBase(t.schedule);
@@ -457,11 +500,11 @@
                 Today: activeTasks.filter(t => isTodayTask(t)).length,
                 Week: activeTasks.filter(t => isWeekTask(t)).length,
                 Month: activeTasks.filter(t => isMonthTask(t)).length,
-                Daily: tasks.filter(t => t.schedule && t.schedule.startsWith('Daily') && (!t.completed || isActiveCompletedTask(t))).length,
-                Weekly: tasks.filter(t => t.schedule && t.schedule.startsWith('Weekly') && (!t.completed || isActiveCompletedTask(t))).length,
-                Monthly: tasks.filter(t => t.schedule && t.schedule.startsWith('Monthly') && (!t.completed || isActiveCompletedTask(t))).length,
+                Daily: activeTasks.filter(t => getScheduleBase(t.schedule) === 'Daily').length,
+                Weekly: activeTasks.filter(t => getScheduleBase(t.schedule) === 'Weekly').length,
+                Monthly: activeTasks.filter(t => getScheduleBase(t.schedule) === 'Monthly').length,
                 Undated: activeTasks.filter(t => !t.schedule || t.schedule === '').length,
-                Executed: tasks.filter(t => t.completed && !isActiveCompletedTask(t)).length // 完全に終わったものだけカウント
+                Executed: tasks.filter(t => t.completed).length
             };
         }
 
@@ -564,20 +607,13 @@
 
                 const baseTasks = tasks.filter(t => {
                     if (selectedFilter === 'Executed' && !selectedCategory) {
-                        return t.completed && !isActiveCompletedTask(t);
+                        return t.completed;
                     }
+                    // Executed 以外のすべてのリスト・フィルターでは完了タスクを非表示にする
+                    if (t.completed) return false;
+
                     if (selectedCategory) {
-                        if (t.category !== selectedCategory) return false;
-                        if (t.completed && !isActiveCompletedTask(t)) return false;
-                        return true;
-                    }
-                    if (t.completed) {
-                        // Daily, Weekly, Monthly フィルターの場合のみ期限満了まで完了済みを表示
-                        if (['Daily', 'Weekly', 'Monthly'].includes(selectedFilter)) {
-                            return isActiveCompletedTask(t);
-                        }
-                        // Today, Week, Month, Undated では完了タスクを表示しない
-                        return false;
+                        return t.category === selectedCategory;
                     }
                     
                     if (selectedFilter) {
@@ -743,31 +779,137 @@
             }
         }
 
+        let autoScrollFrame = null;
+        let currentDragPointerY = null;
+        let currentScrollContainer = null;
+
+        function startEdgeAutoScroll(container) {
+            currentScrollContainer = container;
+            const handlePointerMove = (e) => {
+                if (e.touches && e.touches.length > 0) {
+                    currentDragPointerY = e.touches[0].clientY;
+                } else if (typeof e.clientY === 'number') {
+                    currentDragPointerY = e.clientY;
+                }
+            };
+            window.addEventListener('mousemove', handlePointerMove, { passive: true });
+            window.addEventListener('touchmove', handlePointerMove, { passive: true });
+
+            const step = () => {
+                if (!currentScrollContainer) return;
+                if (currentDragPointerY !== null) {
+                    const rect = currentScrollContainer.getBoundingClientRect();
+                    const threshold = 90; // 上下端から90px以内で自動スクロール開始
+                    const maxSpeed = 18;
+
+                    if (currentDragPointerY > rect.bottom - threshold) {
+                        const ratio = Math.min(1, (currentDragPointerY - (rect.bottom - threshold)) / threshold);
+                        currentScrollContainer.scrollTop += Math.ceil(maxSpeed * ratio);
+                        if (currentScrollContainer.id === 'mainContentArea') savedMainScrollTop = currentScrollContainer.scrollTop;
+                        if (currentScrollContainer.id === 'sidebarContentArea') savedSidebarScrollTop = currentScrollContainer.scrollTop;
+                    } else if (currentDragPointerY < rect.top + threshold) {
+                        const ratio = Math.min(1, ((rect.top + threshold) - currentDragPointerY) / threshold);
+                        currentScrollContainer.scrollTop -= Math.ceil(maxSpeed * ratio);
+                        if (currentScrollContainer.id === 'mainContentArea') savedMainScrollTop = currentScrollContainer.scrollTop;
+                        if (currentScrollContainer.id === 'sidebarContentArea') savedSidebarScrollTop = currentScrollContainer.scrollTop;
+                    }
+                }
+                autoScrollFrame = requestAnimationFrame(step);
+            };
+            autoScrollFrame = requestAnimationFrame(step);
+
+            return () => {
+                if (autoScrollFrame) cancelAnimationFrame(autoScrollFrame);
+                autoScrollFrame = null;
+                currentDragPointerY = null;
+                currentScrollContainer = null;
+                window.removeEventListener('mousemove', handlePointerMove);
+                window.removeEventListener('touchmove', handlePointerMove);
+            };
+        }
+
+        let stopAutoScrollCleanup = null;
+
         window.initSortable = () => {
             const listEl = document.getElementById('categoryListContainer');
+            const sidebarScrollEl = document.getElementById('sidebarContentArea');
             if (listEl && typeof Sortable !== 'undefined') {
                 if (window.sortableCategory) window.sortableCategory.destroy();
                 window.sortableCategory = new Sortable(listEl, {
-                    animation: 150, delay: 300, delayOnTouchOnly: true, fallbackTolerance: 5, filter: 'button, input, a, .prevent-drag',
+                    animation: 200,
+                    easing: 'cubic-bezier(0.25, 1, 0.5, 1)',
+                    delay: 120,
+                    delayOnTouchOnly: true,
+                    touchStartThreshold: 5,
+                    forceFallback: true,
+                    fallbackOnBody: true,
+                    fallbackTolerance: 4,
+                    ghostClass: 'sortable-ghost',
+                    chosenClass: 'sortable-chosen',
+                    dragClass: 'sortable-drag',
+                    scroll: sidebarScrollEl || true,
+                    scrollSensitivity: 90,
+                    scrollSpeed: 16,
+                    bubbleScroll: true,
+                    filter: 'button, input, a, .prevent-drag',
+                    preventOnFilter: false,
+                    onStart: () => {
+                        if (stopAutoScrollCleanup) stopAutoScrollCleanup();
+                        stopAutoScrollCleanup = startEdgeAutoScroll(sidebarScrollEl);
+                    },
                     onEnd: (evt) => {
+                        if (stopAutoScrollCleanup) { stopAutoScrollCleanup(); stopAutoScrollCleanup = null; }
+                        if (evt.oldIndex === evt.newIndex) return;
                         const item = categories.splice(evt.oldIndex, 1)[0];
                         categories.splice(evt.newIndex, 0, item);
-                        categories.forEach(c => saveCategoryToDB(c));
+                        categories.forEach((c, idx) => {
+                            c.sortOrder = idx;
+                            saveCategoryToDB(c);
+                        });
                     }
                 });
             }
             const taskEl = document.getElementById('taskListContainer');
+            const mainScrollEl = document.getElementById('mainContentArea');
             if (taskEl && typeof Sortable !== 'undefined') {
                 if (window.sortableTask) window.sortableTask.destroy();
                 window.sortableTask = new Sortable(taskEl, {
-                    animation: 150, delay: 300, delayOnTouchOnly: true, fallbackTolerance: 5, filter: 'button, input, a, textarea, .prevent-drag',
+                    animation: 200,
+                    easing: 'cubic-bezier(0.25, 1, 0.5, 1)',
+                    delay: 120,
+                    delayOnTouchOnly: true,
+                    touchStartThreshold: 5,
+                    forceFallback: true,
+                    fallbackOnBody: true,
+                    fallbackTolerance: 4,
+                    ghostClass: 'sortable-ghost',
+                    chosenClass: 'sortable-chosen',
+                    dragClass: 'sortable-drag',
+                    scroll: mainScrollEl || true,
+                    scrollSensitivity: 100,
+                    scrollSpeed: 18,
+                    bubbleScroll: true,
+                    filter: 'button, input, a, textarea, .prevent-drag',
+                    preventOnFilter: false,
+                    onStart: () => {
+                        if (stopAutoScrollCleanup) stopAutoScrollCleanup();
+                        stopAutoScrollCleanup = startEdgeAutoScroll(mainScrollEl);
+                    },
                     onEnd: (evt) => {
+                        if (stopAutoScrollCleanup) { stopAutoScrollCleanup(); stopAutoScrollCleanup = null; }
+                        if (evt.oldIndex === evt.newIndex) return;
                         const taskNodes = Array.from(taskEl.children);
                         const newOrderIds = taskNodes.map(node => node.dataset.taskId).filter(id => id);
                         const movedTasks = newOrderIds.map(id => tasks.find(t => t.id === id)).filter(Boolean);
-                        tasks = tasks.filter(t => !newOrderIds.includes(t.id));
-                        tasks = [...movedTasks, ...tasks]; 
-                        tasks.forEach(t => saveTaskToDB(t));
+                        const remainingTasks = tasks.filter(t => !newOrderIds.includes(t.id));
+                        tasks = [...movedTasks, ...remainingTasks];
+                        tasks.forEach((t, idx) => {
+                            if (t.sortOrder !== idx) {
+                                t.sortOrder = idx;
+                                saveTaskToDB(t);
+                            }
+                        });
+                        saveTasksToLocal();
                     }
                 });
             }
@@ -827,7 +969,7 @@
                 <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm overflow-hidden mb-8 flex flex-col">
                     <div id="categoryListContainer" class="divide-y divide-gray-100 dark:divide-gray-700">
                         ${categories.map(cat => {
-                            const count = tasks.filter(t => t.category === cat.name && (!t.completed || isActiveCompletedTask(t))).length;
+                            const count = tasks.filter(t => t.category === cat.name && !t.completed).length;
                             const isSelected = selectedCategory === cat.name;
                             return `
                                 <div ${!isListEditMode ? `onclick="window.selectCategory('${escapeHtml(cat.name)}')" ` : ''} class="flex items-center justify-between p-4 select-none ${!isListEditMode ? 'hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer cursor-grab active:cursor-grabbing' : 'bg-gray-50/50 dark:bg-gray-800/50 cursor-grab active:cursor-grabbing'} ${isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : ''} transition">
@@ -867,26 +1009,17 @@
             const todayStr = getTodayStr();
             let filteredTasks = tasks.filter(t => {
                 if (selectedFilter === 'Executed' && !selectedCategory) {
-                    if (t.completed && !isActiveCompletedTask(t)) return true;
-                    return false;
+                    return t.completed;
                 }
+
+                // Executed 以外のすべてのリスト・フィルターでは完了タスクを非表示にする
+                if (t.completed) return false;
 
                 if (selectedCategory) {
                     if (t.category !== selectedCategory) return false;
-                    if (t.completed && !isActiveCompletedTask(t)) return false; 
                 }
 
                 if (!selectedCategory && selectedFilter && selectedFilter !== 'Executed') {
-                    if (t.completed) {
-                        // Daily, Weekly, Monthly フィルターの場合のみ期限満了まで完了済みを表示
-                        if (['Daily', 'Weekly', 'Monthly'].includes(selectedFilter)) {
-                            if (!isActiveCompletedTask(t)) return false;
-                        } else {
-                            // Today, Week, Month, Undated では完了タスクを表示しない
-                            return false;
-                        }
-                    }
-
                     let matchFilter = false;
                     if (selectedFilter === 'Today') matchFilter = isTodayTask(t);
                     else if (selectedFilter === 'Week') matchFilter = isWeekTask(t);
@@ -905,10 +1038,6 @@
                 if (localFilterPriority !== 'all' && t.priority !== localFilterPriority) return false;
                 if (localFilterCategory !== 'all' && t.category !== localFilterCategory) return false;
                 if (localFilterSchedule !== 'all') {
-                    // ローカルフィルターで Today, Week, Month, Undated が選ばれた場合も完了済みは除外
-                    if (t.completed && ['Today', 'Week', 'Month', 'Undated'].includes(localFilterSchedule)) {
-                        return false;
-                    }
                     let matchLocalSchedule = false;
                     const schedBase = getScheduleBase(t.schedule);
                     if (localFilterSchedule === 'Today') matchLocalSchedule = isTodayTask(t);
@@ -928,10 +1057,6 @@
             if (searchQuery) {
                 filteredTasks = filteredTasks.filter(t => t.title.toLowerCase().includes(searchQuery.toLowerCase()));
             }
-
-            const activeFiltered = filteredTasks.filter(t => !t.completed);
-            const completedFiltered = filteredTasks.filter(t => t.completed);
-            filteredTasks = [...activeFiltered, ...completedFiltered];
 
             return `
                 <div class="space-y-3" id="taskListContainer">
@@ -1024,8 +1149,8 @@
                         </div>
                         `;
                     }).join('')}
-                    <div class="h-36 w-full flex-shrink-0 pointer-events-none"></div>
                 </div>
+                <div class="h-36 w-full flex-shrink-0 pointer-events-none"></div>
             `;
         }
 
@@ -1327,6 +1452,7 @@
             render(isSwitching); 
         };
         window.selectFilter = (filterName) => { 
+            cleanupOldExecutedTasks();
             const isSwitching = selectedFilter !== filterName || selectedCategory !== null || currentView !== 'list';
             selectedFilter = filterName; selectedCategory = null; currentView = 'list'; 
             localFilterLocation = 'all'; localFilterPriority = 'all'; localFilterCategory = 'all';
@@ -1691,6 +1817,11 @@
                 let newTasks = [];
                 snapshot.forEach(doc => newTasks.push(doc.data()));
                 if (!(currentUser?.isAnonymous && newTasks.length === 0 && tasks.length > 0)) {
+                    newTasks.sort((a, b) => {
+                        const orderA = typeof a.sortOrder === 'number' ? a.sortOrder : Number.MAX_SAFE_INTEGER;
+                        const orderB = typeof b.sortOrder === 'number' ? b.sortOrder : Number.MAX_SAFE_INTEGER;
+                        return orderA - orderB;
+                    });
                     tasks = newTasks;
                     saveTasksToLocal();
                 }
@@ -1708,6 +1839,11 @@
                 let newCats = [];
                 snapshot.forEach(doc => newCats.push(doc.data()));
                 if(newCats.length > 0) {
+                    newCats.sort((a, b) => {
+                        const orderA = typeof a.sortOrder === 'number' ? a.sortOrder : Number.MAX_SAFE_INTEGER;
+                        const orderB = typeof b.sortOrder === 'number' ? b.sortOrder : Number.MAX_SAFE_INTEGER;
+                        return orderA - orderB;
+                    });
                     categories = newCats;
                     saveCategoriesToLocal();
                 }
@@ -1736,7 +1872,6 @@
         // 初回ロード時の期限チェック・描画
         processRecurringTasks();
         render();
-
     </script>
 </body>
 </html>
