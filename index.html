@@ -1,4 +1,3 @@
-<!DOCTYPE html>
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
@@ -60,6 +59,22 @@
         let currentUser = null;
         let unsubscribeTasks = null;
         let unsubscribeCategories = null;
+        let isProcessingRecurring = false;
+        let isCloudSyncEnabled = false;
+
+        // スクロール位置保持用ステート
+        let savedMainScrollTop = 0;
+        let savedSidebarScrollTop = 0;
+        let savedFilterBarScrollLeft = 0;
+
+        window.addEventListener('unhandledrejection', function(event) {
+            const msg = String(event.reason?.message || event.reason || '');
+            if (event.reason?.code === 'permission-denied' || msg.includes('Missing or insufficient permissions')) {
+                event.preventDefault();
+                isCloudSyncEnabled = false;
+                console.warn('Firestoreのアクセス権限がないため、ローカル保存モードで動作します。');
+            }
+        });
 
         window.addEventListener('error', function(event) {
             const appEl = document.getElementById('app');
@@ -152,34 +167,66 @@
         function saveTasksToLocal() { safeStorage.setItem('smart_tasks', JSON.stringify(tasks)); }
         function saveCategoriesToLocal() { safeStorage.setItem('smart_categories', JSON.stringify(categories)); }
 
+        function handleFirestoreError(e) {
+            const msg = String(e?.message || e || '');
+            if (e?.code === 'permission-denied' || msg.includes('Missing or insufficient permissions')) {
+                isCloudSyncEnabled = false;
+                if (unsubscribeTasks) { try { unsubscribeTasks(); } catch (_) {} unsubscribeTasks = null; }
+                if (unsubscribeCategories) { try { unsubscribeCategories(); } catch (_) {} unsubscribeCategories = null; }
+                console.warn('Firestoreの権限がないため、ローカルストレージのみで保存します。');
+            } else {
+                console.warn('Firestore sync error:', e);
+            }
+        }
+
         function saveTaskToDB(task) {
             saveTasksToLocal();
-            if (currentUser) {
-                try { setDoc(doc(db, 'users', currentUser.uid, 'tasks', task.id), task); } catch(e) { console.error(e); }
+            if (currentUser && isCloudSyncEnabled) {
+                try {
+                    const cleanTask = JSON.parse(JSON.stringify(task));
+                    setDoc(doc(db, 'users', currentUser.uid, 'tasks', task.id), cleanTask).catch(handleFirestoreError);
+                } catch(e) { handleFirestoreError(e); }
             }
         }
         function deleteTaskFromDB(taskId) {
             saveTasksToLocal();
-            if (currentUser) {
-                try { deleteDoc(doc(db, 'users', currentUser.uid, 'tasks', taskId)); } catch(e) { console.error(e); }
+            if (currentUser && isCloudSyncEnabled) {
+                try {
+                    deleteDoc(doc(db, 'users', currentUser.uid, 'tasks', taskId)).catch(handleFirestoreError);
+                } catch(e) { handleFirestoreError(e); }
             }
         }
         function saveCategoryToDB(cat) {
             saveCategoriesToLocal();
-            if (currentUser) {
-                try { setDoc(doc(db, 'users', currentUser.uid, 'categories', cat.id), cat); } catch(e) { console.error(e); }
+            if (currentUser && isCloudSyncEnabled) {
+                try {
+                    const cleanCat = JSON.parse(JSON.stringify(cat));
+                    setDoc(doc(db, 'users', currentUser.uid, 'categories', cat.id), cleanCat).catch(handleFirestoreError);
+                } catch(e) { handleFirestoreError(e); }
             }
         }
         function deleteCategoryFromDB(catId) {
             saveCategoriesToLocal();
-            if (currentUser) {
-                try { deleteDoc(doc(db, 'users', currentUser.uid, 'categories', catId)); } catch(e) { console.error(e); }
+            if (currentUser && isCloudSyncEnabled) {
+                try {
+                    deleteDoc(doc(db, 'users', currentUser.uid, 'categories', catId)).catch(handleFirestoreError);
+                } catch(e) { handleFirestoreError(e); }
             }
         }
 
         function generateId() { return Math.random().toString(36).substr(2, 9); }
         function formatDate(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
         function getTodayStr() { return formatDate(new Date()); }
+        function getScheduleBase(schedule) {
+            return schedule ? String(schedule).replace('_Completed', '').replace('_Expired', '') : '';
+        }
+        function isRecurringAlreadySpawned(task) {
+            if (!task) return false;
+            if (task.recurringSpawned) return true;
+            const s = String(task.schedule || '');
+            return s.includes('_Completed') || s.includes('_Expired');
+        }
+
         function getThisWeekRange() {
             const d = new Date(); const day = d.getDay(); const diffToMon = day === 0 ? -6 : 1 - day;
             const mon = new Date(d); mon.setDate(mon.getDate() + diffToMon);
@@ -259,40 +306,88 @@
             return formatDate(nextDateObj);
         }
 
+        // 同一の繰り返しタスクについて、次回分（未完了・未生成状態）が既に存在するかチェック
+        function hasActiveNextRecurringTask(sourceTask, schedBase, nextDue, pendingNewTasks = []) {
+            const todayStr = getTodayStr();
+            const allCandidateTasks = [...tasks, ...pendingNewTasks];
+            return allCandidateTasks.some(other => {
+                if (!other || other.id === sourceTask.id) return false;
+                if (other.completed) return false;
+                const otherSchedBase = getScheduleBase(other.schedule);
+                if (otherSchedBase !== schedBase) return false;
+                if ((other.title || '') !== (sourceTask.title || '')) return false;
+                if ((other.category || '') !== (sourceTask.category || '')) return false;
+                if ((other.recurringDetail || '') !== (sourceTask.recurringDetail || '')) return false;
+
+                // 同じ次回期日の未完了タスクが既に存在する場合、または今日以降の未生成タスクが既にある場合は重複とみなす
+                if (other.dueDate === nextDue) return true;
+                if (!isRecurringAlreadySpawned(other) && other.dueDate && other.dueDate >= todayStr) return true;
+                return false;
+            });
+        }
+
+        // 次回分の繰り返しタスクオブジェクトをクリーンな状態で生成
+        function buildNextRecurringTask(sourceTask, schedBase, nextDue) {
+            const newTask = {
+                ...sourceTask,
+                id: generateId(),
+                schedule: schedBase,
+                dueDate: nextDue,
+                completed: false,
+                recurringSpawned: false,
+                subtasks: Array.isArray(sourceTask.subtasks)
+                    ? sourceTask.subtasks.map(st => ({ ...st, completed: false }))
+                    : [],
+                createdAt: Date.now()
+            };
+            delete newTask.completedAt;
+            return newTask;
+        }
+
         function processRecurringTasks() {
+            if (isProcessingRecurring) return false;
+            isProcessingRecurring = true;
+
             let newTasks = [];
             let updatedTasks = [];
             const todayStr = getTodayStr();
             let changed = false;
 
-            tasks.forEach(t => {
-                if (!t.completed && t.dueDate && t.dueDate < todayStr) {
-                    const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
-                    if (['Daily', 'Weekly', 'Monthly'].includes(schedBase) && !t.schedule.includes('_Expired')) {
-                        const nextDue = getNextDueDate(schedBase, t.recurringDetail, t.dueDate);
-                        
-                        const newTask = { ...t, id: generateId(), dueDate: nextDue, createdAt: Date.now() };
-                        t.schedule = schedBase + '_Expired';
-                        
-                        newTasks.push(newTask);
-                        updatedTasks.push(t);
-                        changed = true;
-                    }
-                }
-            });
+            try {
+                tasks.forEach(t => {
+                    if (!t.completed && t.dueDate && t.dueDate < todayStr) {
+                        const schedBase = getScheduleBase(t.schedule);
+                        if (['Daily', 'Weekly', 'Monthly'].includes(schedBase) && !isRecurringAlreadySpawned(t)) {
+                            const nextDue = getNextDueDate(schedBase, t.recurringDetail, t.dueDate);
 
-            if (changed) {
-                newTasks.forEach(nt => tasks.push(nt));
-                saveTasksToLocal();
-                updatedTasks.forEach(ut => saveTaskToDB(ut));
-                newTasks.forEach(nt => saveTaskToDB(nt));
+                            t.schedule = schedBase + '_Expired';
+                            t.recurringSpawned = true;
+                            updatedTasks.push(t);
+                            changed = true;
+
+                            if (!hasActiveNextRecurringTask(t, schedBase, nextDue, newTasks)) {
+                                const newTask = buildNextRecurringTask(t, schedBase, nextDue);
+                                newTasks.push(newTask);
+                            }
+                        }
+                    }
+                });
+
+                if (changed) {
+                    newTasks.forEach(nt => window.insertTaskAtProperPosition(nt));
+                    saveTasksToLocal();
+                    updatedTasks.forEach(ut => saveTaskToDB(ut));
+                    newTasks.forEach(nt => saveTaskToDB(nt));
+                }
+            } finally {
+                isProcessingRecurring = false;
             }
             return changed;
         }
 
         function isActiveCompletedTask(t) {
             if (!t.completed) return false;
-            const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
+            const schedBase = getScheduleBase(t.schedule);
             if (!['Daily', 'Weekly', 'Monthly'].includes(schedBase)) return false;
             
             const today = getTodayStr();
@@ -308,9 +403,12 @@
         }
 
         function isTodayTask(t) {
-            const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
-            if (schedBase === 'Today' || schedBase === 'Daily') return true;
+            const schedBase = getScheduleBase(t.schedule);
             const today = getTodayStr();
+            if (schedBase === 'Today') return true;
+            if (schedBase === 'Daily') {
+                return !t.dueDate || t.dueDate <= today;
+            }
             if (t.dueDate && t.dueDate <= today) return true;
             return false;
         }
@@ -320,7 +418,7 @@
             const today = getTodayStr();
             const { end: weekEnd } = getThisWeekRange();
             if (t.dueDate && t.dueDate > today && t.dueDate <= weekEnd) return true;
-            const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
+            const schedBase = getScheduleBase(t.schedule);
             if (!t.dueDate && (schedBase === 'Week' || schedBase === 'Weekly')) return true;
             return false;
         }
@@ -330,7 +428,7 @@
             const thisMonthPrefix = getThisMonthPrefix();
             // 当月以降（未来の月も）であればMonthに含める
             if (t.dueDate && t.dueDate >= thisMonthPrefix + "-01") return true;
-            const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
+            const schedBase = getScheduleBase(t.schedule);
             if (schedBase === 'Month' || schedBase === 'Monthly') return true;
             return false;
         }
@@ -420,8 +518,40 @@
             return { category: catName, icon: icon };
         }
 
-        function render() {
+        function captureScrollPositions() {
+            const mainEl = document.getElementById('mainContentArea');
+            if (mainEl) savedMainScrollTop = mainEl.scrollTop;
+            const sidebarEl = document.getElementById('sidebarContentArea');
+            if (sidebarEl) savedSidebarScrollTop = sidebarEl.scrollTop;
+            const filterBarEl = document.getElementById('filterBarArea');
+            if (filterBarEl) savedFilterBarScrollLeft = filterBarEl.scrollLeft;
+        }
+
+        function restoreScrollPositions() {
+            const mainEl = document.getElementById('mainContentArea');
+            if (mainEl) {
+                mainEl.scrollTop = savedMainScrollTop;
+                mainEl.onscroll = () => { savedMainScrollTop = mainEl.scrollTop; };
+            }
+            const sidebarEl = document.getElementById('sidebarContentArea');
+            if (sidebarEl) {
+                sidebarEl.scrollTop = savedSidebarScrollTop;
+                sidebarEl.onscroll = () => { savedSidebarScrollTop = sidebarEl.scrollTop; };
+            }
+            const filterBarEl = document.getElementById('filterBarArea');
+            if (filterBarEl) {
+                filterBarEl.scrollLeft = savedFilterBarScrollLeft;
+                filterBarEl.onscroll = () => { savedFilterBarScrollLeft = filterBarEl.scrollLeft; };
+            }
+        }
+
+        function render(resetMainScroll = false) {
             try {
+                captureScrollPositions();
+                if (resetMainScroll) {
+                    savedMainScrollTop = 0;
+                }
+
                 const root = document.getElementById('bodyRoot');
                 if (isDarkMode) { root.classList.add('dark', 'bg-gray-950'); root.classList.remove('bg-gray-100'); }
                 else { root.classList.remove('dark', 'bg-gray-950'); root.classList.add('bg-gray-100'); }
@@ -455,7 +585,7 @@
                         if (selectedFilter === 'Week') return isWeekTask(t);
                         if (selectedFilter === 'Month') return isMonthTask(t);
                         
-                        const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
+                        const schedBase = getScheduleBase(t.schedule);
                         if (selectedFilter === 'Daily') return schedBase === 'Daily';
                         if (selectedFilter === 'Weekly') return schedBase === 'Weekly';
                         if (selectedFilter === 'Monthly') return schedBase === 'Monthly';
@@ -470,7 +600,7 @@
                 const availCats = new Set(baseTasks.map(t => t.category || ''));
                 const availScheds = new Set();
                 baseTasks.forEach(t => {
-                    const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
+                    const schedBase = getScheduleBase(t.schedule);
                     if (!t.completed) {
                         if (isTodayTask(t)) availScheds.add('Today');
                         if (isWeekTask(t)) availScheds.add('Week');
@@ -500,7 +630,7 @@
                                     </button>
                                 </div>
                             </header>
-                            <div class="flex-1 overflow-y-auto p-4 space-y-6 pb-48">
+                            <div class="flex-1 overflow-y-auto p-4 space-y-6 pb-48" id="sidebarContentArea">
                                 ${renderHomeContent()}
                             </div>
                         </aside>
@@ -510,9 +640,9 @@
                             <header class="px-5 py-4 flex items-center justify-between border-b border-gray-200 dark:border-gray-800 bg-white/80 dark:bg-gray-900/80 backdrop-blur z-20 flex-shrink-0">
                                 <div class="flex items-center gap-2 overflow-hidden">
                                     <button onclick="window.navigate('home')" class="sm:hidden p-1.5 -ml-2 rounded-full text-blue-500 hover:bg-blue-50 dark:hover:bg-gray-800 transition flex items-center flex-shrink-0">
-                                    <i data-lucide="chevron-left" class="w-6 h-6"></i>
-                                    <span class="font-semibold text-base">戻る</span>
-                                </button>
+                                        <i data-lucide="chevron-left" class="w-6 h-6"></i>
+                                        <span class="font-semibold text-base">戻る</span>
+                                    </button>
                                     <h2 class="text-2xl font-bold tracking-tight text-gray-900 dark:text-white truncate ${currentView !== 'home' ? '' : 'hidden sm:block'}">${escapeHtml(mainTitle)}</h2>
                                 </div>
                                 <div class="flex items-center gap-2 flex-shrink-0">
@@ -531,7 +661,7 @@
                             ` : ''}
 
                             ${currentView !== 'settings' ? `
-                            <div class="px-5 sm:px-8 lg:px-12 pt-4 pb-2 flex items-center gap-3 overflow-x-auto whitespace-nowrap hide-scrollbar">
+                            <div class="px-5 sm:px-8 lg:px-12 pt-4 pb-2 flex items-center gap-3 overflow-x-auto whitespace-nowrap hide-scrollbar" id="filterBarArea">
                                 ${selectedFilter && !selectedCategory && availCats.size > 0 ? `
                                     <select id="localFilterCategory" onchange="window.updateLocalFilters()" class="text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 rounded-lg p-1.5 outline-none focus:border-blue-500 transition shadow-sm">
                                         <option value="all" ${localFilterCategory === 'all' ? 'selected' : ''}>すべてのリスト</option>
@@ -589,9 +719,19 @@
                     ${viewingImage ? renderImageViewer() : ''}
                 `;
                 appContainer.innerHTML = html;
+
+                // DOM再構築直後にスクロール位置を復元
+                restoreScrollPositions();
                 
-                if (typeof lucide !== 'undefined') lucide.createIcons();
-                else setTimeout(() => { if (typeof lucide !== 'undefined') lucide.createIcons(); }, 150);
+                if (typeof lucide !== 'undefined') {
+                    lucide.createIcons();
+                    restoreScrollPositions();
+                } else {
+                    setTimeout(() => {
+                        if (typeof lucide !== 'undefined') lucide.createIcons();
+                        restoreScrollPositions();
+                    }, 150);
+                }
 
                 if (currentView === 'home' || currentView === 'list') {
                     if (window.initSortable) window.initSortable();
@@ -752,7 +892,7 @@
                     else if (selectedFilter === 'Week') matchFilter = isWeekTask(t);
                     else if (selectedFilter === 'Month') matchFilter = isMonthTask(t);
                     else {
-                        const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
+                        const schedBase = getScheduleBase(t.schedule);
                         if (selectedFilter === 'Daily') matchFilter = schedBase === 'Daily';
                         else if (selectedFilter === 'Weekly') matchFilter = schedBase === 'Weekly';
                         else if (selectedFilter === 'Monthly') matchFilter = schedBase === 'Monthly';
@@ -770,7 +910,7 @@
                         return false;
                     }
                     let matchLocalSchedule = false;
-                    const schedBase = t.schedule ? t.schedule.replace('_Completed', '').replace('_Expired', '') : '';
+                    const schedBase = getScheduleBase(t.schedule);
                     if (localFilterSchedule === 'Today') matchLocalSchedule = isTodayTask(t);
                     else if (localFilterSchedule === 'Week') matchLocalSchedule = isWeekTask(t);
                     else if (localFilterSchedule === 'Month') matchLocalSchedule = isMonthTask(t);
@@ -802,7 +942,7 @@
                         </div>
                     ` : filteredTasks.map(task => {
                         const isCompleted = task.completed;
-                        const schedBase = (task.schedule || '').replace('_Completed', '').replace('_Expired', '');
+                        const schedBase = getScheduleBase(task.schedule);
                         let displaySchedule = escapeHtml(schedBase);
                         
                         if (schedBase === 'Weekly') {
@@ -916,7 +1056,7 @@
                     <div class="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-800 space-y-6">
                         <h3 class="font-bold text-lg border-b border-gray-100 dark:border-gray-700 pb-3 text-gray-900 dark:text-white">データ管理</h3>
                         <div class="pt-2 border-t border-gray-100 dark:border-gray-700">
-                            <button onclick="if(confirm('全てのデータを消去して初期状態に戻しますか？')) { localStorage.clear(); location.reload(); }" class="text-sm text-red-500 font-semibold hover:underline">データを完全にリセット</button>
+                            <button onclick="window.openCustomModal('resetData')" class="text-sm text-red-500 font-semibold hover:underline">データを完全にリセット</button>
                         </div>
                     </div>
                 </div>
@@ -926,7 +1066,7 @@
         function renderCustomModal() {
             if (customModal.type === 'addList' || customModal.type === 'editList') return renderCategoryModal();
 
-            let title = '', content = '', actionBtn = '';
+            let title = '', content = '', actionBtn = '', cancelText = 'キャンセル';
             if (customModal.type === 'deleteList') {
                 title = 'リストの削除';
                 content = `<p class="text-sm text-gray-600 dark:text-gray-300 mt-2 break-words">リスト「${escapeHtml(customModal.data.name)}」を削除しますか？<br><span class="text-xs text-red-500">※リスト内のタスクは消えません（カテゴリ未設定になります）</span></p>`;
@@ -935,6 +1075,14 @@
                 title = 'タスクの削除';
                 content = `<p class="text-sm text-gray-600 dark:text-gray-300 mt-2">このタスクを完全に削除しますか？</p>`;
                 actionBtn = `<button onclick="window.handleModalSubmit()" class="flex-1 bg-red-500 hover:bg-red-600 text-white font-semibold p-3 rounded-xl transition">削除する</button>`;
+            } else if (customModal.type === 'resetData') {
+                title = 'データのリセット';
+                content = `<p class="text-sm text-gray-600 dark:text-gray-300 mt-2">全てのデータを消去して初期状態に戻しますか？</p>`;
+                actionBtn = `<button onclick="window.handleModalSubmit()" class="flex-1 bg-red-500 hover:bg-red-600 text-white font-semibold p-3 rounded-xl transition">リセット</button>`;
+            } else if (customModal.type === 'message') {
+                title = escapeHtml(customModal.data?.title || 'お知らせ');
+                content = `<p class="text-sm text-gray-600 dark:text-gray-300 mt-2 break-words">${escapeHtml(customModal.data?.message || '')}</p>`;
+                cancelText = '閉じる';
             }
 
             return `
@@ -943,7 +1091,7 @@
                         <h3 class="font-bold text-lg text-gray-900 dark:text-white">${title}</h3>
                         ${content}
                         <div class="flex gap-2 mt-6">
-                            <button onclick="window.closeCustomModal()" class="flex-1 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-semibold p-3 rounded-xl transition">キャンセル</button>
+                            <button onclick="window.closeCustomModal()" class="flex-1 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-semibold p-3 rounded-xl transition">${cancelText}</button>
                             ${actionBtn}
                         </div>
                     </div>
@@ -997,7 +1145,7 @@
 
         function renderTaskModal() {
             const currentTask = editingTask || taskFormDraft;
-            const schedBase = currentTask ? (currentTask.schedule || '').replace('_Completed', '').replace('_Expired', '') : '';
+            const schedBase = currentTask ? getScheduleBase(currentTask.schedule) : '';
             const isCustom = schedBase === 'Custom';
             const displaySchedule = currentTask ? schedBase : defaultSchedule;
 
@@ -1173,16 +1321,18 @@
         window.navigate = (view) => { currentView = view; if (view === 'home') isListEditMode = false; render(); };
         window.toggleListEditMode = () => { isListEditMode = !isListEditMode; render(); };
         window.selectCategory = (catName) => { 
+            const isSwitching = selectedCategory !== catName || currentView !== 'list';
             selectedCategory = catName; selectedFilter = null; currentView = 'list'; 
             localFilterLocation = 'all'; localFilterPriority = 'all'; localFilterSchedule = 'all';
-            render(); 
+            render(isSwitching); 
         };
         window.selectFilter = (filterName) => { 
+            const isSwitching = selectedFilter !== filterName || selectedCategory !== null || currentView !== 'list';
             selectedFilter = filterName; selectedCategory = null; currentView = 'list'; 
             localFilterLocation = 'all'; localFilterPriority = 'all'; localFilterCategory = 'all';
-            render(); 
+            render(isSwitching); 
         };
-        window.openSettings = () => { currentView = 'settings'; selectedCategory = null; selectedFilter = null; render(); };
+        window.openSettings = () => { currentView = 'settings'; selectedCategory = null; selectedFilter = null; render(true); };
         window.toggleDarkMode = () => { isDarkMode = !isDarkMode; safeStorage.setItem('smart_theme', isDarkMode ? 'dark' : 'light'); render(); };
         window.toggleSearch = () => { isSearchOpen = !isSearchOpen; if (!isSearchOpen) searchQuery = ''; render(); };
         window.updateSearchQuery = (val) => { searchQuery = val; render(); };
@@ -1192,7 +1342,7 @@
             localFilterPriority = document.getElementById('localFilterPriority')?.value || 'all';
             localFilterCategory = document.getElementById('localFilterCategory')?.value || 'all';
             localFilterSchedule = document.getElementById('localFilterSchedule')?.value || 'all';
-            render();
+            render(true);
         };
         
         window.updateCategoryForm = (key, val) => { categoryFormState[key] = val; render(); };
@@ -1250,6 +1400,9 @@
                 tasks = tasks.filter(t => t.id !== data.id);
                 deleteTaskFromDB(data.id);
                 window.closeCustomModal();
+            } else if (type === 'resetData') {
+                localStorage.clear();
+                location.reload();
             }
         };
 
@@ -1276,7 +1429,7 @@
         window.updateTempMemo = (val) => { tempMemo = val; };
         
         window.toggleScheduleDetails = () => {
-            const schedule = document.getElementById('taskSchedule').value;
+            const schedule = document.getElementById('taskSchedule')?.value;
             const customContainer = document.getElementById('customDateContainer');
             const recurringContainer = document.getElementById('recurringDetailContainer');
             const recurringSelect = document.getElementById('taskRecurringDetail');
@@ -1332,6 +1485,7 @@
             if (t && t.subtasks && t.subtasks[idx]) { 
                 t.subtasks[idx].completed = !t.subtasks[idx].completed; 
                 saveTaskToDB(t); 
+                render();
             }
         };
 
@@ -1354,7 +1508,10 @@
         window.handleFileUpload = (e) => {
             const files = e.target.files;
             for (let file of files) {
-                if (file.size > 2 * 1024 * 1024) { alert('ファイルサイズは2MB以下にしてください。'); continue; }
+                if (file.size > 2 * 1024 * 1024) {
+                    window.openCustomModal('message', { title: 'サイズ超過', message: 'ファイルサイズは2MB以下にしてください。' });
+                    continue;
+                }
                 const reader = new FileReader();
                 reader.onload = (event) => {
                     taskFormAttachments.push({ name: file.name, type: file.type, data: event.target.result });
@@ -1405,23 +1562,31 @@
             const task = tasks.find(t => t.id === id);
             if (task) {
                 task.completed = !task.completed;
+                const schedBase = getScheduleBase(task.schedule);
+
                 if (task.completed) {
                     task.completedAt = Date.now();
                     
-                    const schedBase = task.schedule ? task.schedule.replace('_Completed', '').replace('_Expired', '') : '';
-                    if (['Daily', 'Weekly', 'Monthly'].includes(schedBase) && !(task.schedule || '').includes('_Completed')) {
+                    // 期日超過(_Expired)や完了(_Completed)で既に次回分が生成済みの場合は二重作成しない
+                    if (['Daily', 'Weekly', 'Monthly'].includes(schedBase)) {
+                        const alreadySpawned = isRecurringAlreadySpawned(task);
                         const nextDue = getNextDueDate(schedBase, task.recurringDetail, task.dueDate || getTodayStr());
-                        const newTask = { ...task, id: generateId(), dueDate: nextDue, completed: false, createdAt: Date.now() };
-                        delete newTask.completedAt;
-                        
+
                         task.schedule = schedBase + '_Completed';
-                        
-                        tasks.push(newTask);
-                        saveTaskToDB(newTask);
+                        task.recurringSpawned = true;
+
+                        if (!alreadySpawned && !hasActiveNextRecurringTask(task, schedBase, nextDue)) {
+                            const newTask = buildNextRecurringTask(task, schedBase, nextDue);
+                            window.insertTaskAtProperPosition(newTask);
+                            saveTaskToDB(newTask);
+                        }
                     }
                 } else {
                     delete task.completedAt;
-                    // 再度未完了に戻した時、_Completed を外す処理を入れるかは運用次第だが、単純に完了取り消しとする
+                    // 未完了に戻す際、表示用スケジュール文字列はベースに戻すが、既に生成済みのフラグ(recurringSpawned)は維持して再完了時の二重生成を防ぐ
+                    if (['Daily', 'Weekly', 'Monthly'].includes(schedBase)) {
+                        task.schedule = schedBase;
+                    }
                 }
                 window.insertTaskAtProperPosition(task);
                 saveTaskToDB(task);
@@ -1453,20 +1618,35 @@
             };
 
             if (editingTask) {
+                const prevSchedBase = getScheduleBase(editingTask.schedule);
+                const wasSpawned = isRecurringAlreadySpawned(editingTask);
                 Object.assign(editingTask, baseTaskData);
                 editingTask.category = category || editingTask.category;
+
+                // 同じ繰り返し設定のまま編集した場合は、既に次回分生成済みかどうかの状態を維持
+                if (wasSpawned && prevSchedBase === schedule) {
+                    editingTask.recurringSpawned = true;
+                    if (editingTask.completed) {
+                        editingTask.schedule = schedule + '_Completed';
+                    } else if (editingTask.dueDate && editingTask.dueDate < getTodayStr()) {
+                        editingTask.schedule = schedule + '_Expired';
+                    }
+                } else {
+                    editingTask.recurringSpawned = false;
+                }
+
                 saveTaskToDB(editingTask);
                 taskFormDraft = null;
                 window.closeTaskModal();
             } else if (!category) {
                 const aiResult = await aiCategorizeAndIcon(title);
                 pendingAiTask = {
-                    taskData: { id: generateId(), ...baseTaskData, completed: false, createdAt: Date.now() },
+                    taskData: { id: generateId(), ...baseTaskData, completed: false, recurringSpawned: false, createdAt: Date.now() },
                     aiResult
                 };
                 isTaskModalOpen = false; render();
             } else {
-                const newTask = { id: generateId(), ...baseTaskData, category, completed: false, createdAt: Date.now() };
+                const newTask = { id: generateId(), ...baseTaskData, category, completed: false, recurringSpawned: false, createdAt: Date.now() };
                 taskFormDraft = null;
                 window.insertTaskAtProperPosition(newTask);
                 saveTaskToDB(newTask);
@@ -1492,7 +1672,7 @@
         window.loginWithGoogle = () => {
             const provider = new GoogleAuthProvider();
             signInWithPopup(auth, provider).catch((error) => {
-                alert('ログインに失敗しました。\n' + error.message);
+                window.openCustomModal('message', { title: 'ログイン失敗', message: error.message });
                 console.error(error);
             });
         };
@@ -1502,20 +1682,27 @@
         };
 
         function subscribeData(uid) {
-            if (unsubscribeTasks) unsubscribeTasks();
-            if (unsubscribeCategories) unsubscribeCategories();
+            if (unsubscribeTasks) { try { unsubscribeTasks(); } catch (_) {} unsubscribeTasks = null; }
+            if (unsubscribeCategories) { try { unsubscribeCategories(); } catch (_) {} unsubscribeCategories = null; }
+
+            isCloudSyncEnabled = true;
 
             unsubscribeTasks = onSnapshot(collection(db, 'users', uid, 'tasks'), (snapshot) => {
                 let newTasks = [];
                 snapshot.forEach(doc => newTasks.push(doc.data()));
-                tasks = newTasks;
-                saveTasksToLocal();
+                if (!(currentUser?.isAnonymous && newTasks.length === 0 && tasks.length > 0)) {
+                    tasks = newTasks;
+                    saveTasksToLocal();
+                }
                 
                 // Firestoreからの読み込み後も期限チェックを行う
-                if(!processRecurringTasks()) {
-                    render(); // 更新がなければ単純にrender
-                }
-            }, (error) => console.error("Tasks sync error:", error));
+                processRecurringTasks();
+                render();
+            }, (error) => {
+                handleFirestoreError(error);
+                processRecurringTasks();
+                render();
+            });
 
             unsubscribeCategories = onSnapshot(collection(db, 'users', uid, 'categories'), (snapshot) => {
                 let newCats = [];
@@ -1525,7 +1712,10 @@
                     saveCategoriesToLocal();
                 }
                 render();
-            }, (error) => console.error("Categories sync error:", error));
+            }, (error) => {
+                handleFirestoreError(error);
+                render();
+            });
         }
 
         onAuthStateChanged(auth, (user) => {
@@ -1533,17 +1723,19 @@
             if (user) {
                 subscribeData(user.uid);
             } else {
-                if (unsubscribeTasks) unsubscribeTasks();
-                if (unsubscribeCategories) unsubscribeCategories();
+                isCloudSyncEnabled = false;
+                if (unsubscribeTasks) { try { unsubscribeTasks(); } catch (_) {} unsubscribeTasks = null; }
+                if (unsubscribeCategories) { try { unsubscribeCategories(); } catch (_) {} unsubscribeCategories = null; }
                 // 匿名ログインにフォールバック（外部アクセス時用）
-                signInAnonymously(auth).catch(console.error);
+                signInAnonymously(auth).catch((err) => {
+                    console.warn('Anonymous auth skipped:', err.message || err);
+                });
             }
         });
 
         // 初回ロード時の期限チェック・描画
-        if(!processRecurringTasks()) {
-            render();
-        }
+        processRecurringTasks();
+        render();
 
     </script>
 </body>
