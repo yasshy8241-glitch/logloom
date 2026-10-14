@@ -1,4 +1,4 @@
-const CACHE_NAME = 'logloom-v1';
+const CACHE_NAME = 'logloom-v3';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
